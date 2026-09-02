@@ -16,6 +16,15 @@ pub struct DownloadRequest {
     pub destination: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectVersion {
+    pub key: String,
+    pub version_id: String,
+    pub is_latest: bool,
+    pub last_modified: String,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AppState {
     pub profiles: Vec<String>,
@@ -23,9 +32,11 @@ pub struct AppState {
     pub buckets: Vec<String>,
     pub selected_bucket: Option<String>,
     pub object_key: String,
-    pub version_id: String,
+    pub versions: Vec<ObjectVersion>,
+    pub selected_version_id: Option<String>,
     pub destination: String,
     pub loading_buckets: bool,
+    pub loading_versions: bool,
     pub downloading: bool,
     pub status: Option<AppStatus>,
 }
@@ -51,12 +62,25 @@ impl AppState {
             return Err("Choose a destination file before downloading.".to_string());
         }
 
-        let version_id = self.version_id.trim();
+        let version_id = match self.selected_version_id.as_deref() {
+            Some(version_id) if !version_id.trim().is_empty() => {
+                if !self
+                    .versions
+                    .iter()
+                    .any(|version| version.version_id == version_id)
+                {
+                    return Err("The selected object version is no longer available.".to_string());
+                }
+                Some(version_id.to_string())
+            }
+            _ => None,
+        };
+
         Ok(DownloadRequest {
             profile: profile.to_string(),
             bucket: bucket.to_string(),
             key: key.to_string(),
-            version_id: (!version_id.is_empty()).then(|| version_id.to_string()),
+            version_id,
             destination: PathBuf::from(destination),
         })
     }
@@ -76,7 +100,7 @@ impl AppState {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{AppState, AppStatus};
+    use super::{AppState, AppStatus, ObjectVersion};
 
     #[test]
     fn default_state_is_empty_and_idle() {
@@ -86,7 +110,10 @@ mod tests {
         assert!(state.selected_profile.is_none());
         assert!(state.buckets.is_empty());
         assert!(state.selected_bucket.is_none());
+        assert!(state.versions.is_empty());
+        assert!(state.selected_version_id.is_none());
         assert!(!state.loading_buckets);
+        assert!(!state.loading_versions);
         assert!(!state.downloading);
         assert!(state.status.is_none());
     }
@@ -97,7 +124,14 @@ mod tests {
             selected_profile: Some("default".to_string()),
             selected_bucket: Some("bucket".to_string()),
             object_key: " folder/object.txt ".to_string(),
-            version_id: " version-1 ".to_string(),
+            versions: vec![ObjectVersion {
+                key: "folder/object.txt".to_string(),
+                version_id: "version-1".to_string(),
+                is_latest: false,
+                last_modified: "2026-01-01T00:00:00Z".to_string(),
+                size: 10,
+            }],
+            selected_version_id: Some("version-1".to_string()),
             destination: " /tmp/object.txt ".to_string(),
             ..Default::default()
         };
@@ -132,7 +166,6 @@ mod tests {
             selected_bucket: Some("bucket".to_string()),
             object_key: "object.txt".to_string(),
             destination: "download.txt".to_string(),
-            version_id: "   ".to_string(),
             ..Default::default()
         };
 

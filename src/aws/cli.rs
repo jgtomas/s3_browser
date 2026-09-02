@@ -4,6 +4,8 @@ use std::{
     process::{Command, Output},
 };
 
+use crate::models::ObjectVersion;
+
 const AWS_CLI_FALLBACK_PATHS: &[&str] = &[
     "/usr/local/bin/aws",
     "/opt/homebrew/bin/aws",
@@ -32,6 +34,20 @@ pub fn list_buckets(profile: &str) -> Result<Vec<String>, String> {
     )?;
 
     parse_bucket_names(&output.stdout)
+}
+
+/// Lists all downloadable versions of an exact S3 object key.
+pub fn list_object_versions(
+    profile: &str,
+    bucket: &str,
+    key: &str,
+) -> Result<Vec<ObjectVersion>, String> {
+    let output = run_command(
+        list_object_versions_command(profile, bucket, key),
+        format!("Listing object versions for s3://{bucket}/{key}"),
+    )?;
+
+    parse_object_versions(&output.stdout, key)
 }
 
 /// Downloads one S3 object to a local destination using the AWS CLI.
@@ -63,6 +79,23 @@ fn list_buckets_command(profile: &str) -> Command {
         .arg(profile)
         .arg("--query")
         .arg("Buckets[].Name")
+        .arg("--output")
+        .arg("json")
+        .arg("--no-cli-pager");
+    command
+}
+
+fn list_object_versions_command(profile: &str, bucket: &str, key: &str) -> Command {
+    let mut command = aws_command();
+    command
+        .arg("s3api")
+        .arg("list-object-versions")
+        .arg("--bucket")
+        .arg(bucket)
+        .arg("--prefix")
+        .arg(key)
+        .arg("--profile")
+        .arg(profile)
         .arg("--output")
         .arg("json")
         .arg("--no-cli-pager");
@@ -137,6 +170,66 @@ fn parse_bucket_names(stdout: &[u8]) -> Result<Vec<String>, String> {
     Ok(buckets)
 }
 
+fn parse_object_versions(stdout: &[u8], requested_key: &str) -> Result<Vec<ObjectVersion>, String> {
+    let document: serde_json::Value = serde_json::from_slice(stdout)
+        .map_err(|error| format!("AWS CLI returned invalid object version JSON: {error}"))?;
+    let versions = document
+        .get("Versions")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "AWS CLI object version JSON is missing a Versions array.".to_string())?;
+
+    let mut parsed = Vec::new();
+    for version in versions {
+        let key = version
+            .get("Key")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "AWS CLI returned an object version without a Key.".to_string())?;
+        if key != requested_key {
+            continue;
+        }
+
+        let version_id = version
+            .get("VersionId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "AWS CLI returned an object version without a VersionId.".to_string())?;
+        let is_latest = version
+            .get("IsLatest")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| {
+                "AWS CLI returned an object version without a valid IsLatest value.".to_string()
+            })?;
+        let last_modified = version
+            .get("LastModified")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                "AWS CLI returned an object version without a LastModified value.".to_string()
+            })?;
+        let size = version
+            .get("Size")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| {
+                "AWS CLI returned an object version without a valid Size.".to_string()
+            })?;
+
+        parsed.push(ObjectVersion {
+            key: key.to_string(),
+            version_id: version_id.to_string(),
+            is_latest,
+            last_modified: last_modified.to_string(),
+            size,
+        });
+    }
+
+    parsed.sort_by(|left, right| {
+        right
+            .is_latest
+            .cmp(&left.is_latest)
+            .then_with(|| right.last_modified.cmp(&left.last_modified))
+            .then_with(|| left.version_id.cmp(&right.version_id))
+    });
+    Ok(parsed)
+}
+
 fn command_start_error(error: io::Error, operation: &str) -> String {
     if error.kind() == io::ErrorKind::NotFound {
         format!("The AWS CLI is not installed or not available on PATH while {operation}.")
@@ -158,7 +251,10 @@ fn command_failure(operation: &str, output: &Output) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::{download_object_command, list_buckets_command, parse_bucket_names};
+    use super::{
+        download_object_command, list_buckets_command, list_object_versions_command,
+        parse_bucket_names, parse_object_versions,
+    };
 
     fn args(command: &std::process::Command) -> Vec<String> {
         command
@@ -178,6 +274,31 @@ mod tests {
         );
         assert!(values.contains(&"--query".to_string()));
         assert!(values.contains(&"--output".to_string()));
+    }
+
+    #[test]
+    fn list_versions_command_keeps_key_and_profile_as_one_argument() {
+        let command = list_object_versions_command(
+            "profile with spaces",
+            "bucket-name",
+            "folder/object with spaces and \"quotes\".txt",
+        );
+        let values = args(&command);
+
+        assert_eq!(
+            values[0..6],
+            [
+                "s3api",
+                "list-object-versions",
+                "--bucket",
+                "bucket-name",
+                "--prefix",
+                "folder/object with spaces and \"quotes\".txt"
+            ]
+        );
+        assert!(values.contains(&"profile with spaces".to_string()));
+        assert!(!values.contains(&"--query".to_string()));
+        assert!(!values.contains(&"--no-paginate".to_string()));
     }
 
     #[test]
@@ -227,5 +348,84 @@ mod tests {
     fn reports_malformed_bucket_json() {
         let error = parse_bucket_names(b"not json").expect_err("malformed JSON should fail");
         assert!(error.contains("invalid bucket JSON"));
+    }
+
+    #[test]
+    fn parses_exact_object_versions_in_latest_first_order() {
+        let json = br#"{
+            "Versions": [
+                {
+                    "Key": "folder/other.txt",
+                    "VersionId": "other",
+                    "IsLatest": true,
+                    "LastModified": "2026-02-01T00:00:00Z",
+                    "Size": 5
+                },
+                {
+                    "Key": "folder/object.txt",
+                    "VersionId": "older",
+                    "IsLatest": false,
+                    "LastModified": "2026-01-01T00:00:00Z",
+                    "Size": 12
+                },
+                {
+                    "Key": "folder/object.txt",
+                    "VersionId": "latest",
+                    "IsLatest": true,
+                    "LastModified": "2026-02-01T00:00:00Z",
+                    "Size": 24
+                },
+                {
+                    "Key": "folder/object.txt",
+                    "VersionId": "newer",
+                    "IsLatest": false,
+                    "LastModified": "2026-03-01T00:00:00Z",
+                    "Size": 36
+                }
+            ],
+            "DeleteMarkers": [
+                {
+                    "Key": "folder/object.txt",
+                    "VersionId": "deleted",
+                    "IsLatest": false
+                }
+            ]
+        }"#;
+
+        let versions = parse_object_versions(json, "folder/object.txt")
+            .expect("object version JSON should parse");
+
+        assert_eq!(
+            versions
+                .iter()
+                .map(|version| version.version_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["latest", "newer", "older"]
+        );
+        assert!(versions[0].is_latest);
+        assert_eq!(versions[0].size, 24);
+        assert!(
+            versions
+                .iter()
+                .all(|version| version.key == "folder/object.txt")
+        );
+    }
+
+    #[test]
+    fn parses_empty_object_version_results() {
+        let versions = parse_object_versions(br#"{"Versions": []}"#, "object.txt")
+            .expect("empty object version JSON should parse");
+        assert!(versions.is_empty());
+    }
+
+    #[test]
+    fn reports_malformed_object_version_json() {
+        let error = parse_object_versions(b"not json", "object.txt")
+            .expect_err("malformed object version JSON should fail");
+        assert!(error.contains("invalid object version JSON"));
+
+        let error = parse_object_versions(br#"{}"#, "object.txt")
+            .expect_err("missing Versions should fail");
+        assert!(error.contains("missing a Versions array"));
     }
 }

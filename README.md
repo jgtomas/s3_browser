@@ -10,8 +10,11 @@ The application is written in Rust with GPUI and gpui-component.
 
 - Reads AWS profile names from `~/.aws/config`.
 - Lists buckets for the selected AWS profile.
+- Uses a Sidebar for profile and bucket navigation.
+- Loads object versions for an exact key when Enter is pressed.
+- Lets you select a specific object version before downloading.
 - Downloads an object by bucket and key.
-- Supports an optional S3 Version ID.
+- Downloads the current/latest object when no version is selected.
 - Provides a native macOS save-file dialog.
 - Shows download progress, success messages, and AWS CLI errors.
 - Provides a native `S3 Downloader → Quit` menu item and `⌘Q` shortcut.
@@ -73,6 +76,13 @@ cargo build --release
 ```
 
 The application opens a window titled `S3 Downloader`.
+
+## Download workflow
+
+Choose an AWS profile at the bottom of the Sidebar, then select a bucket. Enter
+an object key and press Enter to load its available versions. Select a version
+when you need a historical object; leave the version selector empty to download
+the current object.
 
 ## Build the macOS DMG
 
@@ -145,6 +155,7 @@ Then run `./scripts/build-macos.sh` again.
 The selected AWS identity generally needs:
 
 - `s3:ListAllMyBuckets` to load the bucket list.
+- `s3:ListBucketVersions` to load versions for an object key.
 - `s3:GetObject` to download the current object.
 - `s3:GetObjectVersion` when downloading a specific version.
 

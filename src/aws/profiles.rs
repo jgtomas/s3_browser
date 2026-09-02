@@ -106,7 +106,7 @@ region = us-east-1
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after the Unix epoch")
             .as_nanos();
-        let path = PathBuf::from(std::env::temp_dir()).join(format!(
+        let path = std::env::temp_dir().join(format!(
             "s3-downloader-profile-test-{}-{unique}",
             std::process::id()
         ));

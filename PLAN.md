@@ -644,3 +644,125 @@ Running:
 
 produces the final DMG from a clean checkout on a correctly configured
 macOS development machine.
+
+
+# Task 15 — Sidebar workflow and object version selection
+
+## Goal
+
+Create the next visual version of S3 Downloader as a two-pane desktop workspace:
+
+- a `gpui-component` Sidebar containing the bucket list and the AWS profile selector;
+- a main download area whose inputs become available after a bucket is selected;
+- object-version discovery through `s3api list-object-versions`;
+- optional selection of a specific object version before downloading.
+
+The existing AWS CLI integration, native macOS Quit menu/`Command+Q` behavior, icon, and packaging flow remain in scope only as regression requirements. Do not implement future work beyond this task.
+
+Reference the official Sidebar API when needed: <https://longbridge.github.io/gpui-component/docs/components/sidebar>.
+
+## User workflow
+
+1. On startup, load the configured AWS profiles as today. The profile selector is placed at the bottom of the Sidebar, inside `SidebarFooter`.
+2. When the user confirms a profile selection, clear the current bucket and object/version state, then load that profile’s buckets.
+3. Render the buckets as Sidebar menu items under a “Buckets” group. Show loading, empty, and error states in the Sidebar without making the main area unusable.
+4. Selecting a bucket marks that item active and unlocks the object-key, version, destination, and download controls in the main area. Before a bucket is selected, those controls are visibly disabled.
+5. When the user enters an object key and presses Enter, call `s3api list-object-versions` for the selected profile, bucket, and key. Do not issue a request on every keystroke.
+6. Display the downloadable versions in a version selector, with the latest version clearly identified and useful metadata such as last-modified time and size. A version selector may remain empty when the object has no version history.
+7. If the user selects a version, download that exact version. If the user leaves the selector empty, download the current/latest object by omitting `--version-id`, preserving the existing behavior.
+8. Changing the profile, bucket, or object key clears any incompatible bucket/version selection and prevents a previous asynchronous response from overwriting the current state.
+
+## AWS CLI implementation
+
+Add an `ObjectVersion` domain model in the existing model modules with the minimum fields needed by the UI and downloader:
+
+- object key;
+- version ID;
+- `IsLatest`;
+- `LastModified`;
+- size.
+
+Add `list_object_versions(profile, bucket, key)` to the existing AWS CLI module. Construct arguments with individual `Command::arg` calls:
+
+    aws s3api list-object-versions \
+      --bucket BUCKET \
+      --prefix KEY \
+      --profile PROFILE \
+      --output json \
+      --no-cli-pager
+
+Keep AWS CLI pagination enabled by default; do not add `--no-paginate`. Parse the JSON response in Rust, retain only entries whose `Key` exactly equals the requested key, and ignore `DeleteMarkers` because they are not downloadable object versions. The `--prefix` filter is only an optimization and must not be treated as an exact-key filter. Avoid interpolating the object key into a JMESPath query.
+
+Sort the resulting versions with the latest version first, followed by descending `LastModified`, while preserving stable version IDs for selection. Surface malformed output and AWS command failures through the existing error/status path.
+
+The AWS CLI operation requires `s3:ListBucketVersions`; downloading a selected version requires `s3:GetObjectVersion`, while downloading without an explicit version uses the existing `s3:GetObject` path. See the official [list-object-versions](https://docs.aws.amazon.com/cli/latest/reference/s3api/list-object-versions.html) and [get-object](https://docs.aws.amazon.com/cli/latest/reference/s3api/get-object.html) documentation.
+
+## Application state and async behavior
+
+Extend the existing `AppState`/`DownloaderApp` state instead of introducing a new architectural layer:
+
+- `versions: Vec<ObjectVersion>`;
+- `selected_version_id: Option<String>`;
+- `loading_versions: bool`;
+- a monotonically increasing version-request ID owned by `DownloaderApp` (or an equivalent existing state owner).
+
+Replace the free-form version-ID input with the version selector. `DownloadRequest.version_id` remains `Option<String>` and is populated from `selected_version_id`; no selection must produce `None`.
+
+Add focused state transitions for:
+
+- beginning a version request after validating that a bucket and nonblank key are selected;
+- completing a version request only when its request ID, profile, bucket, and key still match the current state;
+- selecting only a version ID that belongs to the current `versions` collection;
+- clearing versions and the selected version whenever the profile, bucket, or key changes;
+- retaining a usable no-explicit-version download path when version discovery returns an empty list or fails, while clearly showing the discovery error/status.
+
+Use the existing background executor pattern for the CLI call. Update the owning entity on the UI context and notify once per accepted result. A stale result must be ignored silently and must not clear or replace newer version data.
+
+## UI composition
+
+Rework `MainWindow` using the installed `gpui-component` API:
+
+- use `Sidebar::left()` as the left pane;
+- use `SidebarHeader`, `SidebarGroup`, `SidebarMenu`, `SidebarMenuItem`, and `SidebarFooter` for the Sidebar structure;
+- keep the selected bucket as domain state and derive each menu item’s `.active(...)` value from that state;
+- put the existing profile `Select` in the Sidebar footer, with an accessible “AWS Profile” label;
+- show a spinner while buckets or versions are loading;
+- show clear empty/error text when no buckets or versions are available;
+- keep the main download form as the existing `MainWindow`/`DownloaderApp` feature, using the standard Input, Select, Button, Alert, and Spinner components.
+
+The bucket rows must call the existing application state transition on click. The version selector should use stable version IDs as values rather than relying on display text or list indexes. A small UI adapter type implementing the existing `SelectItem` contract is acceptable for formatting version metadata.
+
+Disable the main object-key, version, destination, Browse, and Download controls until a bucket is selected. Keep profile and bucket navigation available while downloading, but disable actions that would create conflicting requests as appropriate. Pressing Enter in the object-key field starts exactly one version lookup for the current key. Preserve standard Select keyboard behavior and the existing native macOS menu/`Command+Q` shortcut.
+
+Resize the default/minimum window bounds enough for a Sidebar plus the download form, while keeping the layout responsive with the existing GPUI flex/layout primitives. Use theme tokens and the component styling conventions; do not reimplement Sidebar or Select internals.
+
+## Tests and verification
+
+Add or update focused tests for:
+
+- exact construction of `list-object-versions` arguments, including profiles, buckets, prefixes, and keys containing spaces or special characters;
+- parsing/filtering of `Versions`, exclusion of delete markers, latest-first ordering, malformed JSON, and empty results;
+- profile/bucket/key changes clearing version state;
+- stale version responses being ignored when the request ID or identity no longer matches;
+- valid version selection and rejection/clearing of an invalid version selection;
+- download requests and command arguments with and without `--version-id`;
+- disabled/enabled form behavior around bucket selection and version-loading states, where existing UI-test patterns make this practical.
+
+Run the repository-required checks after implementation:
+
+    cargo fmt
+    cargo test
+    cargo check
+
+Also run `cargo clippy`, `cargo build --release`, and `./scripts/build-macos.sh` when the local macOS toolchain permits it. Do not require real AWS credentials or live S3 calls in automated tests. Update the README only with documentation directly required by this workflow, especially the version-list permission and the no-selection/latest-version behavior.
+
+## Acceptance criteria
+
+- The application presents a Sidebar with the bucket list and a profile dropdown at the bottom.
+- Selecting a profile refreshes the bucket list; selecting a bucket marks it active and unlocks the main form.
+- Entering a key and pressing Enter loads the exact key’s object versions through `list-object-versions`.
+- The user can select a listed version and download that exact version.
+- With no selected version, the download command omits `--version-id` and downloads the current/latest object.
+- Loading, empty, AWS error, malformed-response, and stale-response cases are handled without corrupting current selections.
+- Existing macOS Quit menu/`Command+Q`, icon, AWS CLI path handling, tests, and packaging remain working.
+- The implementation changes only the files needed for Task 15 and passes the required verification commands.
