@@ -1,21 +1,96 @@
-# S3 Downloader
+<div align="center">
+  <img src="icon_s3_browser_512.png" alt="S3 Downloader icon" width="128" />
+  <h1>S3 Downloader</h1>
+  <p><strong>A focused macOS workspace for downloading one object from a client S3 bucket.</strong></p>
+  <p>Use the AWS CLI profiles and roles you already trust. Find the bucket, choose the object version, and save the file locally.</p>
+  <p>
+    <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-111820?style=flat-square&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+    <img src="https://img.shields.io/badge/Rust-GPUI-f28c28?style=flat-square&logo=rust&logoColor=white" alt="Built with Rust and GPUI" />
+    <img src="https://img.shields.io/badge/AWS-CLI%20profiles-243447?style=flat-square&logo=amazonaws&logoColor=white" alt="AWS CLI profiles" />
+  </p>
+</div>
 
-S3 Downloader is a small native macOS application for downloading one S3
-object at a time. It uses the locally installed AWS CLI rather than the AWS
-Rust SDK.
+S3 Downloader is a small native Mac app for the moments when a client gives you
+access to an S3 bucket and you need a dependable local copy of a specific file.
+It keeps the workflow intentionally narrow: no object browser, no uploads, and
+no credential store—just a clear path from an AWS profile to a downloaded file.
 
-The application is written in Rust with GPUI and gpui-component.
+## Why teams use it
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/images/icons/buckets.svg" alt="S3 buckets" width="52" />
+      <br /><strong>Profile-first access</strong>
+      <br />Choose the AWS CLI profile or role you already use, then see its buckets in one place.
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/images/icons/version-history.svg" alt="Object version history" width="52" />
+      <br /><strong>Version-aware downloads</strong>
+      <br />Inspect versions for an exact key and make historical-file requests explicit.
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/images/icons/download.svg" alt="Download an S3 object" width="52" />
+      <br /><strong>Local, predictable output</strong>
+      <br />Choose a destination with the native save dialog and keep the file on your Mac.
+    </td>
+  </tr>
+</table>
+
+## See it in action
+
+This section is a ready-to-replace screenshot slot. The placeholder keeps the
+README useful until a final product screenshot is available.
+
+<p align="center">
+  <img src="docs/images/app-screenshot.png" alt="S3 Downloader screenshot placeholder" width="900" />
+</p>
+
+## The workflow
+
+1. **Choose an AWS profile.** Profiles are read from `~/.aws/config` and shown
+   at the top of the Sidebar.
+2. **Choose a bucket.** Filter the loaded bucket list locally, refresh it when
+   needed, or enter a bucket name manually when the profile cannot list buckets.
+3. **Identify the object.** Enter the full S3 key, including folders. Press
+   Enter or choose **Load versions** to inspect available versions.
+4. **Choose what to download.** Leave the version selector on **Current version**
+   for the latest object, or select a specific version ID for a historical copy.
+5. **Save the file.** Choose a local destination and press **Download**.
+
+The selected profile and bucket stay visible as quiet context while you work,
+and the app reports loading, success, and AWS errors in the workspace.
+
+## Role-based access, without another credential store
+
+S3 Downloader delegates authentication and role resolution to the AWS CLI. This
+means your existing profiles, SSO sessions, environment variables, and role
+configuration remain the source of truth. The app does not read, display, or
+persist secret keys.
+
+For example, configure or validate a profile before opening the app:
+
+```sh
+aws configure --profile staging
+aws sts get-caller-identity --profile staging
+```
+
+For an SSO-backed profile, sign in first:
+
+```sh
+aws sso login --profile staging
+```
 
 ## Features
 
 - Reads AWS profile names from `~/.aws/config`.
-- Lists buckets for the selected AWS profile.
-- Uses a Sidebar for profile and bucket navigation.
-- Loads object versions for an exact key when Enter is pressed.
-- Lets you select a specific object version before downloading.
-- Downloads an object by bucket and key.
+- Lists and locally filters buckets for the selected profile.
+- Refreshes buckets without losing a still-valid selection.
+- Preserves the manual bucket-entry fallback when listing is denied.
+- Loads object versions for an exact key with Enter or **Load versions**.
 - Downloads the current/latest object when no version is selected.
-- Provides a native macOS save-file dialog.
+- Downloads a specific object version when one is selected.
+- Uses the native macOS save-file dialog.
 - Shows download progress, success messages, and AWS CLI errors.
 - Provides a native `S3 Downloader → Quit` menu item and `⌘Q` shortcut.
 - Builds an Apple Silicon `.app` bundle and `.dmg` installer.
@@ -42,21 +117,6 @@ region = eu-west-1
 region = eu-west-1
 ```
 
-Credentials are not managed by the application. Configure them using the AWS
-CLI, AWS SSO, environment variables, or the normal AWS credential files. For
-example:
-
-```sh
-aws configure --profile staging
-aws sts get-caller-identity --profile staging
-```
-
-For an SSO profile, log in before using the application:
-
-```sh
-aws sso login --profile staging
-```
-
 ## Run locally
 
 From the project directory:
@@ -76,13 +136,6 @@ cargo build --release
 ```
 
 The application opens a window titled `S3 Downloader`.
-
-## Download workflow
-
-Choose an AWS profile at the bottom of the Sidebar, then select a bucket. Enter
-an object key and press Enter to load its available versions. Select a version
-when you need a historical object; leave the version selector empty to download
-the current object.
 
 ## Build the macOS DMG
 
@@ -137,7 +190,7 @@ launch, Control-click the application, choose **Open**, and confirm the prompt.
 
 ## Application icon
 
-The original icon is [`icon_s3_browser.png`](icon_s3_browser.png). The
+The application icon is [`icon_s3_browser.png`](icon_s3_browser.png). The
 packager uses the supported 512×512 derivative
 [`icon_s3_browser_512.png`](icon_s3_browser_512.png), configured in
 `Packager.toml`.
@@ -200,6 +253,7 @@ src/
 └── ui/
     └── main_window.rs       # GPUI form and user interactions
 
+docs/images/                 # README feature icons and screenshot slot
 Packager.toml                # macOS app and DMG configuration
 scripts/build-macos.sh       # Release verification and packaging script
 ```

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" role="img" aria-labelledby="title">
+  <title id="title">S3 buckets</title>
+  <path d="M8 12h32v24H8z" fill="#243447" stroke="#8ba4c7" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M8 18h32M8 26h32" stroke="#8ba4c7" stroke-width="2.5"/>
+  <path d="M16 12v24M32 12v24" stroke="#58769e" stroke-width="2"/>
+  <path d="M12 8h24" stroke="#f28c28" stroke-width="3" stroke-linecap="round"/>
+</svg>

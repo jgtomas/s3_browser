@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">S3 Downloader screenshot placeholder</title>
+  <desc id="desc">A placeholder showing where to add an S3 Downloader app screenshot.</desc>
+  <rect width="1600" height="900" rx="22" fill="#111820"/>
+  <rect x="1.5" y="1.5" width="1597" height="897" rx="20.5" stroke="#49617b" stroke-width="3" stroke-dasharray="12 10"/>
+  <rect width="1600" height="62" rx="22" fill="#1b2735"/>
+  <circle cx="34" cy="31" r="9" fill="#ef6a63"/>
+  <circle cx="64" cy="31" r="9" fill="#f4bd4f"/>
+  <circle cx="94" cy="31" r="9" fill="#61c554"/>
+  <text x="132" y="39" fill="#dce7f5" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="22" font-weight="600">S3 Downloader</text>
+  <rect x="40" y="102" width="390" height="720" rx="14" fill="#172331"/>
+  <rect x="480" y="102" width="1080" height="720" rx="14" fill="#0d141c"/>
+  <rect x="82" y="150" width="220" height="18" rx="9" fill="#8ba4c7" opacity=".8"/>
+  <rect x="82" y="188" width="150" height="12" rx="6" fill="#607a99"/>
+  <rect x="82" y="262" width="286" height="50" rx="10" fill="#243447" stroke="#58769e" stroke-width="2"/>
+  <rect x="82" y="346" width="286" height="50" rx="10" fill="#243447"/>
+  <rect x="82" y="438" width="210" height="12" rx="6" fill="#607a99"/>
+  <rect x="82" y="476" width="286" height="42" rx="9" fill="#1f2f42"/>
+  <rect x="82" y="550" width="230" height="12" rx="6" fill="#607a99"/>
+  <rect x="82" y="582" width="286" height="12" rx="6" fill="#49617b"/>
+  <text x="710" y="390" fill="#dce7f5" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="34" font-weight="600">Drop your app screenshot here</text>
+  <text x="710" y="438" fill="#8ba4c7" font-family="-apple-system, BlinkMacSystemFont, sans-serif" font-size="21">Replace this placeholder with docs/images/app-screenshot.png</text>
+  <rect x="710" y="478" width="360" height="4" rx="2" fill="#f28c28"/>
+</svg>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" role="img" aria-labelledby="title">
+  <title id="title">Object version history</title>
+  <circle cx="24" cy="24" r="15" fill="#243447" stroke="#8ba4c7" stroke-width="2.5"/>
+  <path d="M24 16v9l6 4" stroke="#f28c28" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M12 11 8 15l4 4" stroke="#8ba4c7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8 15c2-6 8-10 15-10 5 0 9 2 12 5" stroke="#8ba4c7" stroke-width="2.5" stroke-linecap="round"/>
+</svg>
