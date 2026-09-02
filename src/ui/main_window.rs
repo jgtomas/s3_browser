@@ -325,7 +325,13 @@ impl MainWindow {
                     v_flex()
                         .gap_2()
                         .w_full()
-                        .child(div().text_xs().font_medium().child("S3 Bucket"))
+                        .child(div().font_semibold().child("S3 Downloader"))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted_foreground)
+                                .child("AWS buckets"),
+                        )
                         .child(
                             Input::new(&self.bucket_name_input)
                                 .disabled(state.loading_buckets || state.downloading)
