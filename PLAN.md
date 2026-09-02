@@ -766,3 +766,35 @@ Also run `cargo clippy`, `cargo build --release`, and `./scripts/build-macos.sh`
 - Loading, empty, AWS error, malformed-response, and stale-response cases are handled without corrupting current selections.
 - Existing macOS Quit menu/`Command+Q`, icon, AWS CLI path handling, tests, and packaging remain working.
 - The implementation changes only the files needed for Task 15 and passes the required verification commands.
+
+# Task 16 — Approved download-workspace UI redesign
+
+Implement the approved UI and UX redesign described in
+[`UI_REDESIGN_PLAN.md`](UI_REDESIGN_PLAN.md).
+
+This is a presentation and interaction refinement of the existing Task 15
+workflow. Preserve the existing AWS CLI commands, profile parsing, object-version
+semantics, download behavior, packaging, and macOS menu behavior.
+
+Use the Luna-agent execution sequence in the linked plan. Do not implement an S3
+object browser, uploads, download history, credential management, role discovery,
+or configuration persistence as part of this task.
+
+Acceptance criteria:
+
+- the Sidebar presents the profile context before the bucket collection;
+- loaded buckets can be filtered locally without making AWS requests;
+- the bucket count, loading state, empty state, failure state, and persistent
+  selection remain understandable;
+- the selected profile and bucket are repeated as quiet context in the download
+  workspace;
+- object-version lookup is available through a visible `Load versions` button and
+  remains available by pressing Enter in the object-key field;
+- destination selection is labeled `Choose…` and still uses the native save dialog;
+- routine readiness information is quiet, while errors and completed downloads
+  retain clear semantic feedback;
+- the `Download` button is the only primary action in the workspace;
+- light and dark themes, keyboard focus, disabled/loading states, long bucket names,
+  window resizing, and the manual-bucket fallback remain usable;
+- the implementation follows the scope, tests, and verification gates in
+  `UI_REDESIGN_PLAN.md`.
