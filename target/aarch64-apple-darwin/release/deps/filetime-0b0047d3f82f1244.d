@@ -1,0 +1,10 @@
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/filetime-0b0047d3f82f1244.d: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/mod.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/utimes.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/macos.rs
+
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/libfiletime-0b0047d3f82f1244.rlib: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/mod.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/utimes.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/macos.rs
+
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/libfiletime-0b0047d3f82f1244.rmeta: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/mod.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/utimes.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/macos.rs
+
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/lib.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/mod.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/utimes.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/unix/macos.rs:

@@ -1,0 +1,1 @@
+cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/build/mime_guess-fc37a2d83ea5c8cf/out/mime_types_generated.rs

@@ -1,0 +1,9 @@
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/tree_sitter_json-2b0f370fec427964.d: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/../../src/node-types.json /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/../../queries/highlights.scm
+
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/libtree_sitter_json-2b0f370fec427964.rlib: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/../../src/node-types.json /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/../../queries/highlights.scm
+
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/libtree_sitter_json-2b0f370fec427964.rmeta: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/../../src/node-types.json /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/../../queries/highlights.scm
+
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/lib.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/../../src/node-types.json:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tree-sitter-json-0.24.8/bindings/rust/../../queries/highlights.scm:

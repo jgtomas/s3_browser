@@ -1,0 +1,10 @@
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/compression_core-dad2fdeaa7b7b1f8.d: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/level.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/unshared.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/util.rs
+
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/libcompression_core-dad2fdeaa7b7b1f8.rlib: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/level.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/unshared.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/util.rs
+
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/libcompression_core-dad2fdeaa7b7b1f8.rmeta: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/level.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/unshared.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/util.rs
+
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/lib.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/level.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/unshared.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/compression-core-0.4.32/src/util.rs:

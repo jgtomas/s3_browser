@@ -1,0 +1,14 @@
+name = "s3-downloader"
+product-name = "S3 Downloader"
+version = "0.1.0"
+identifier = "com.julengodoy.s3downloader"
+formats = ["app", "dmg"]
+icons = ["icon_s3_browser_512.png"]
+target-triple = "aarch64-apple-darwin"
+out-dir = "target/aarch64-apple-darwin/release"
+binaries-dir = "target/aarch64-apple-darwin/release"
+before-packaging-command = "cargo build --release --target aarch64-apple-darwin"
+
+[[binaries]]
+path = "s3-downloader"
+main = true

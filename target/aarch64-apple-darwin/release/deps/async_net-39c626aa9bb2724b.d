@@ -1,0 +1,11 @@
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/async_net-39c626aa9bb2724b.d: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/unix.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/addr.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/tcp.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/udp.rs
+
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/libasync_net-39c626aa9bb2724b.rlib: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/unix.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/addr.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/tcp.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/udp.rs
+
+/Users/julengodoy/Documents/github/s3_browser/target/aarch64-apple-darwin/release/deps/libasync_net-39c626aa9bb2724b.rmeta: /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/lib.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/unix.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/addr.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/tcp.rs /Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/udp.rs
+
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/lib.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/unix.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/addr.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/tcp.rs:
+/Users/julengodoy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/async-net-2.0.0/src/udp.rs:
