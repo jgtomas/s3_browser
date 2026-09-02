@@ -31,6 +31,7 @@ pub struct AppState {
     pub selected_profile: Option<String>,
     pub buckets: Vec<String>,
     pub selected_bucket: Option<String>,
+    pub manual_bucket_entry: bool,
     pub object_key: String,
     pub versions: Vec<ObjectVersion>,
     pub selected_version_id: Option<String>,
@@ -110,6 +111,7 @@ mod tests {
         assert!(state.selected_profile.is_none());
         assert!(state.buckets.is_empty());
         assert!(state.selected_bucket.is_none());
+        assert!(!state.manual_bucket_entry);
         assert!(state.versions.is_empty());
         assert!(state.selected_version_id.is_none());
         assert!(!state.loading_buckets);

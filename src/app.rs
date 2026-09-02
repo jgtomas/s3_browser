@@ -1,5 +1,6 @@
 use gpui::Context;
 
+use crate::aws;
 use crate::models::{AppState, AppStatus, DownloadRequest, ObjectVersion};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +76,7 @@ impl DownloaderApp {
         self.state.selected_profile = Some(profile);
         self.state.buckets.clear();
         self.state.selected_bucket = None;
+        self.state.manual_bucket_entry = false;
         self.state.object_key.clear();
         self.invalidate_version_state();
         self.state.loading_buckets = true;
@@ -110,9 +112,17 @@ impl DownloaderApp {
             Err(error) => {
                 self.state.buckets.clear();
                 self.state.selected_bucket = None;
-                self.state.status = Some(AppStatus::Error(format!(
-                    "Could not load S3 buckets: {error}"
-                )));
+                if aws::cli::is_access_denied_error(&error) {
+                    self.state.manual_bucket_entry = true;
+                    self.state.status = Some(AppStatus::Info(
+                        "This profile cannot list buckets. Enter a bucket name manually."
+                            .to_string(),
+                    ));
+                } else {
+                    self.state.status = Some(AppStatus::Error(format!(
+                        "Could not load S3 buckets: {error}"
+                    )));
+                }
             }
         }
         cx.notify();
@@ -120,7 +130,8 @@ impl DownloaderApp {
     }
 
     pub fn select_bucket(&mut self, bucket: String, cx: &mut Context<Self>) -> bool {
-        if !self.state.buckets.iter().any(|item| item == &bucket) {
+        if !self.state.manual_bucket_entry && !self.state.buckets.iter().any(|item| item == &bucket)
+        {
             return false;
         }
 
@@ -133,6 +144,16 @@ impl DownloaderApp {
             cx.notify();
         }
         true
+    }
+
+    pub fn set_manual_bucket(&mut self, value: String, cx: &mut Context<Self>) {
+        if !self.state.manual_bucket_entry {
+            return;
+        }
+
+        self.state.selected_bucket = (!value.trim().is_empty()).then(|| value.trim().to_string());
+        self.invalidate_version_state();
+        cx.notify();
     }
 
     pub fn set_object_key(&mut self, value: String, cx: &mut Context<Self>) {

@@ -48,6 +48,7 @@ pub struct MainWindow {
     application: Entity<DownloaderApp>,
     profile_select: Entity<SelectState<Vec<String>>>,
     version_select: Entity<SelectState<Vec<ObjectVersion>>>,
+    bucket_name_input: Entity<InputState>,
     object_key_input: Entity<InputState>,
     destination_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
@@ -59,6 +60,8 @@ impl MainWindow {
         let profile_select = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
         let version_select =
             cx.new(|cx| SelectState::new(Vec::<ObjectVersion>::new(), None, window, cx));
+        let bucket_name_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Enter bucket name"));
         let object_key_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("folder/object.txt"));
         let destination_input =
@@ -97,6 +100,18 @@ impl MainWindow {
                 },
             ),
             cx.subscribe_in(
+                &bucket_name_input,
+                window,
+                |this, input, event: &InputEvent, _, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        let value = input.read(cx).value().to_string();
+                        this.application.update(cx, |application, cx| {
+                            application.set_manual_bucket(value, cx);
+                        });
+                    }
+                },
+            ),
+            cx.subscribe_in(
                 &object_key_input,
                 window,
                 |this, input, event: &InputEvent, window, cx| match event {
@@ -131,6 +146,7 @@ impl MainWindow {
             application,
             profile_select,
             version_select,
+            bucket_name_input,
             object_key_input,
             destination_input,
             _subscriptions: subscriptions,
@@ -146,6 +162,9 @@ impl MainWindow {
         }
 
         self.object_key_input.update(cx, |input, cx| {
+            input.set_value("", window, cx);
+        });
+        self.bucket_name_input.update(cx, |input, cx| {
             input.set_value("", window, cx);
         });
         self.clear_version_select(window, cx);
@@ -300,11 +319,23 @@ impl MainWindow {
             .disabled(profile_disabled)
             .w_full();
 
-        Sidebar::left()
-            .collapsible(false)
-            .w(rems(SIDEBAR_WIDTH_REMS))
-            .header(
-                SidebarHeader::new().child(
+        let header = if state.manual_bucket_entry {
+            SidebarHeader::new()
+                .child(
+                    v_flex()
+                        .gap_2()
+                        .w_full()
+                        .child(div().text_xs().font_medium().child("S3 Bucket"))
+                        .child(
+                            Input::new(&self.bucket_name_input)
+                                .disabled(state.loading_buckets || state.downloading)
+                                .w_full(),
+                        ),
+                )
+                .into_any_element()
+        } else {
+            SidebarHeader::new()
+                .child(
                     h_flex()
                         .gap_2()
                         .child(Icon::new(IconName::Folder).size_4())
@@ -319,8 +350,14 @@ impl MainWindow {
                                         .child("AWS buckets"),
                                 ),
                         ),
-                ),
-            )
+                )
+                .into_any_element()
+        };
+
+        Sidebar::left()
+            .collapsible(false)
+            .w(rems(SIDEBAR_WIDTH_REMS))
+            .header(header)
             .child(SidebarGroup::new("Buckets").child(self.render_bucket_menu(state)))
             .footer(
                 SidebarFooter::new().child(
@@ -342,6 +379,8 @@ impl MainWindow {
             ]
         } else if state.selected_profile.is_none() {
             vec![SidebarMenuItem::new("Select a profile to list buckets").disable(true)]
+        } else if state.manual_bucket_entry {
+            vec![SidebarMenuItem::new("Enter a bucket name above").disable(true)]
         } else if state.buckets.is_empty() {
             let message = match &state.status {
                 Some(AppStatus::Error(message)) => message.clone(),

@@ -36,6 +36,20 @@ pub fn list_buckets(profile: &str) -> Result<Vec<String>, String> {
     parse_bucket_names(&output.stdout)
 }
 
+/// Returns whether an AWS CLI error indicates that bucket listing is not allowed.
+pub fn is_access_denied_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    [
+        "accessdenied",
+        "access denied",
+        "not authorized",
+        "unauthorizedoperation",
+        "forbidden",
+    ]
+    .iter()
+    .any(|marker| error.contains(marker))
+}
+
 /// Lists all downloadable versions of an exact S3 object key.
 pub fn list_object_versions(
     profile: &str,
@@ -342,6 +356,17 @@ mod tests {
             parse_bucket_names(json).expect("bucket JSON should parse"),
             vec!["alpha", "zeta"]
         );
+    }
+
+    #[test]
+    fn recognizes_bucket_permission_errors() {
+        assert!(super::is_access_denied_error(
+            "An error occurred (AccessDenied) when calling ListBuckets"
+        ));
+        assert!(super::is_access_denied_error("User is not authorized"));
+        assert!(!super::is_access_denied_error(
+            "Unable to connect to the endpoint"
+        ));
     }
 
     #[test]
