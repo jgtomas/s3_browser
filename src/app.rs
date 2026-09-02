@@ -11,9 +11,36 @@ pub struct VersionLoadRequest {
     pub request_id: u64,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct BucketReconciliation {
+    buckets: Vec<String>,
+    selected_bucket: Option<String>,
+    selected_bucket_removed: bool,
+}
+
+fn reconcile_bucket_list(
+    mut buckets: Vec<String>,
+    selected_bucket: Option<&str>,
+) -> BucketReconciliation {
+    buckets.sort_unstable();
+    buckets.dedup();
+
+    let selected_bucket = selected_bucket.map(str::to_string);
+    let selected_bucket_removed = selected_bucket
+        .as_deref()
+        .is_some_and(|selected| !buckets.iter().any(|bucket| bucket.as_str() == selected));
+
+    BucketReconciliation {
+        buckets,
+        selected_bucket: selected_bucket.filter(|_| !selected_bucket_removed),
+        selected_bucket_removed,
+    }
+}
+
 pub struct DownloaderApp {
     pub state: AppState,
     next_version_request_id: u64,
+    bucket_refresh_in_progress: bool,
 }
 
 impl DownloaderApp {
@@ -26,6 +53,7 @@ impl DownloaderApp {
                 ..Default::default()
             },
             next_version_request_id: 0,
+            bucket_refresh_in_progress: false,
         }
     }
 
@@ -74,6 +102,7 @@ impl DownloaderApp {
         }
 
         self.state.selected_profile = Some(profile);
+        self.bucket_refresh_in_progress = false;
         self.state.buckets.clear();
         self.state.selected_bucket = None;
         self.state.manual_bucket_entry = false;
@@ -83,6 +112,34 @@ impl DownloaderApp {
         self.state.status = Some(AppStatus::Info("Loading buckets...".to_string()));
         cx.notify();
         true
+    }
+
+    pub fn begin_bucket_refresh(&mut self, cx: &mut Context<Self>) -> Result<String, String> {
+        if self.state.loading_buckets {
+            let error = "A bucket refresh is already in progress.".to_string();
+            self.set_error(error.clone(), cx);
+            return Err(error);
+        }
+
+        let profile = self
+            .state
+            .selected_profile
+            .as_deref()
+            .filter(|profile| !profile.trim().is_empty())
+            .ok_or_else(|| "Select an AWS profile before refreshing buckets.".to_string());
+        let profile = match profile {
+            Ok(profile) => profile,
+            Err(error) => {
+                self.set_error(error.clone(), cx);
+                return Err(error);
+            }
+        };
+
+        self.bucket_refresh_in_progress = true;
+        self.state.loading_buckets = true;
+        self.state.status = Some(AppStatus::Info("Refreshing buckets...".to_string()));
+        cx.notify();
+        Ok(profile.to_string())
     }
 
     pub fn finish_bucket_load(
@@ -96,12 +153,23 @@ impl DownloaderApp {
         }
 
         self.state.loading_buckets = false;
+        let is_refresh = self.bucket_refresh_in_progress;
+        self.bucket_refresh_in_progress = false;
         match result {
-            Ok(mut buckets) => {
-                buckets.sort_unstable();
-                buckets.dedup();
-                self.state.buckets = buckets;
-                self.state.selected_bucket = None;
+            Ok(buckets) => {
+                let reconciliation =
+                    reconcile_bucket_list(buckets, self.state.selected_bucket.as_deref());
+                self.state.buckets = reconciliation.buckets;
+                if is_refresh {
+                    self.state.selected_bucket = reconciliation.selected_bucket;
+                    if reconciliation.selected_bucket_removed {
+                        self.state.object_key.clear();
+                        self.invalidate_version_state();
+                    }
+                    self.state.manual_bucket_entry = false;
+                } else {
+                    self.state.selected_bucket = None;
+                }
                 let message = if self.state.buckets.is_empty() {
                     "No S3 buckets were found for this profile.".to_string()
                 } else {
@@ -110,18 +178,24 @@ impl DownloaderApp {
                 self.state.status = Some(AppStatus::Info(message));
             }
             Err(error) => {
-                self.state.buckets.clear();
-                self.state.selected_bucket = None;
-                if aws::cli::is_access_denied_error(&error) {
-                    self.state.manual_bucket_entry = true;
-                    self.state.status = Some(AppStatus::Info(
-                        "This profile cannot list buckets. Enter a bucket name manually."
-                            .to_string(),
-                    ));
-                } else {
+                if is_refresh {
                     self.state.status = Some(AppStatus::Error(format!(
-                        "Could not load S3 buckets: {error}"
+                        "Could not refresh S3 buckets: {error}"
                     )));
+                } else {
+                    self.state.buckets.clear();
+                    self.state.selected_bucket = None;
+                    if aws::cli::is_access_denied_error(&error) {
+                        self.state.manual_bucket_entry = true;
+                        self.state.status = Some(AppStatus::Info(
+                            "This profile cannot list buckets. Enter a bucket name manually."
+                                .to_string(),
+                        ));
+                    } else {
+                        self.state.status = Some(AppStatus::Error(format!(
+                            "Could not load S3 buckets: {error}"
+                        )));
+                    }
                 }
             }
         }
@@ -352,5 +426,32 @@ impl DownloaderApp {
 impl Default for DownloaderApp {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reconcile_bucket_list;
+
+    #[test]
+    fn reconciliation_sorts_deduplicates_and_retains_available_selection() {
+        let reconciliation = reconcile_bucket_list(
+            vec!["zeta".to_string(), "alpha".to_string(), "alpha".to_string()],
+            Some("alpha"),
+        );
+
+        assert_eq!(reconciliation.buckets, vec!["alpha", "zeta"]);
+        assert_eq!(reconciliation.selected_bucket.as_deref(), Some("alpha"));
+        assert!(!reconciliation.selected_bucket_removed);
+    }
+
+    #[test]
+    fn reconciliation_clears_selection_when_the_bucket_disappears() {
+        let reconciliation =
+            reconcile_bucket_list(vec!["alpha".to_string()], Some("removed-bucket"));
+
+        assert_eq!(reconciliation.buckets, vec!["alpha"]);
+        assert_eq!(reconciliation.selected_bucket, None);
+        assert!(reconciliation.selected_bucket_removed);
     }
 }
