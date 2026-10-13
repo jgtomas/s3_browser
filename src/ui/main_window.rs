@@ -1,30 +1,221 @@
-use std::path::{Path, PathBuf};
-
-use gpui::{
-    AnyElement, AppContext, Context, ElementId, Entity, IntoElement, ParentElement, Render,
-    SharedString, Styled, Subscription, Window, div, rems,
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, atomic::AtomicBool},
 };
-use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
+
+use gpui_kit::component::{
+    ActiveTheme, Disableable, Icon, IconName, IndexPath, Sizable, StyledExt,
     alert::Alert,
     button::{Button, ButtonVariants},
+    combobox::{Combobox, ComboboxEvent, ComboboxState},
     h_flex,
     input::{Input, InputEvent, InputState},
+    list::{List, ListDelegate, ListEvent, ListItem, ListState},
+    resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::ScrollableElement,
+    searchable_list::SearchableVec,
     select::{Select, SelectEvent, SelectItem, SelectState},
-    sidebar::{Sidebar, SidebarGroup, SidebarMenu, SidebarMenuItem},
     spinner::Spinner,
     v_flex,
 };
-
-use crate::{
-    app::{DownloaderApp, RecentObjectsLoadRequest, VersionLoadRequest},
-    aws,
-    models::{AppState, AppStatus, DownloadRequest, ObjectVersion, RecentObjectsState},
+use gpui_kit::{
+    AnyElement, AppContext, Context, ElementId, Entity, InteractiveElement, IntoElement,
+    ParentElement, Render, SharedString, Styled, Subscription, Task, Window, div,
+    prelude::FluentBuilder, rems,
 };
 
+use crate::{
+    NarrowSidebar, ResetSidebar, WidenSidebar,
+    app::{DownloaderApp, RecentObjectsLoadRequest, VersionLoadRequest},
+    aws,
+    models::{
+        AppState, AppStatus, DownloadRequest, ObjectVersion, RecentObject, RecentObjectsState,
+    },
+};
+
+#[cfg(test)]
+use gpui_kit::test::TestSupportExt as _;
+
 const SIDEBAR_WIDTH_REMS: f32 = 22.0;
+const SIDEBAR_MIN_WIDTH_REMS: f32 = 18.0;
+const SIDEBAR_MAX_WIDTH_REMS: f32 = 28.0;
+const WORKSPACE_MIN_WIDTH_REMS: f32 = 30.0;
 const CONTENT_MAX_WIDTH_REMS: f32 = 56.0;
+
+fn profile_selection_changed(current: Option<&str>, proposed: &str) -> bool {
+    current != Some(proposed)
+}
+
+fn bucket_confirmation_enabled(loading_buckets: bool, downloading: bool) -> bool {
+    !loading_buckets && !downloading
+}
+
+fn sidebar_width_max_rem(container_width_rem: f32) -> f32 {
+    SIDEBAR_MAX_WIDTH_REMS
+        .min((container_width_rem - WORKSPACE_MIN_WIDTH_REMS).max(SIDEBAR_MIN_WIDTH_REMS))
+}
+
+type ListBucketsCommand = dyn Fn(&str) -> Result<Vec<String>, String> + Send + Sync;
+type ListRecentObjectsCommand =
+    dyn Fn(&str, &str, Arc<AtomicBool>) -> Result<Option<Vec<RecentObject>>, String> + Send + Sync;
+type ListVersionsCommand =
+    dyn Fn(&str, &str, &str) -> Result<Vec<ObjectVersion>, String> + Send + Sync;
+type DownloadCommand =
+    dyn Fn(&str, &str, &str, Option<&str>, &Path) -> Result<(), String> + Send + Sync;
+
+#[derive(Clone)]
+struct AwsCommands {
+    list_buckets: Arc<ListBucketsCommand>,
+    list_recent_objects: Arc<ListRecentObjectsCommand>,
+    list_versions: Arc<ListVersionsCommand>,
+    download: Arc<DownloadCommand>,
+}
+
+impl Default for AwsCommands {
+    fn default() -> Self {
+        Self {
+            list_buckets: Arc::new(aws::cli::list_buckets),
+            list_recent_objects: Arc::new(|profile, bucket, cancelled| {
+                aws::cli::list_recent_objects(profile, bucket, &cancelled)
+            }),
+            list_versions: Arc::new(aws::cli::list_object_versions),
+            download: Arc::new(aws::cli::download_object),
+        }
+    }
+}
+
+struct BucketListDelegate {
+    profile: Option<String>,
+    buckets: Vec<String>,
+    visible_buckets: Vec<String>,
+    query: String,
+    confirmed_bucket: Option<String>,
+    empty_message: String,
+}
+
+impl BucketListDelegate {
+    fn from_state(state: &AppState) -> Self {
+        let mut delegate = Self {
+            profile: None,
+            buckets: Vec::new(),
+            visible_buckets: Vec::new(),
+            query: String::new(),
+            confirmed_bucket: None,
+            empty_message: String::new(),
+        };
+        delegate.update_from_state(state);
+        delegate
+    }
+
+    fn update_from_state(&mut self, state: &AppState) {
+        self.profile = state.selected_profile.clone();
+        self.buckets = state.buckets.clone();
+        self.confirmed_bucket = state.selected_bucket.clone();
+        self.empty_message = if state.loading_buckets && state.buckets.is_empty() {
+            "Loading buckets…".to_string()
+        } else if state.selected_profile.is_none() {
+            "Select a profile to list buckets".to_string()
+        } else if state.manual_bucket_entry {
+            "Enter a bucket name above".to_string()
+        } else if let Some(AppStatus::Error(message)) = &state.status
+            && state.buckets.is_empty()
+        {
+            message.clone()
+        } else if !self.query.is_empty() && !state.buckets.is_empty() {
+            format!("No buckets match “{}”", self.query)
+        } else {
+            "No S3 buckets found for this profile".to_string()
+        };
+        self.apply_filter();
+    }
+
+    fn apply_filter(&mut self) {
+        self.visible_buckets = filter_buckets(&self.buckets, &self.query);
+    }
+
+    fn bucket_at(&self, row: usize) -> Option<&String> {
+        self.visible_buckets.get(row)
+    }
+
+    fn selected_bucket_is_hidden(&self) -> bool {
+        self.confirmed_bucket.as_ref().is_some_and(|selected| {
+            !self.query.is_empty() && !self.visible_buckets.iter().any(|bucket| bucket == selected)
+        })
+    }
+}
+
+impl ListDelegate for BucketListDelegate {
+    type Item = ListItem;
+
+    fn perform_search(
+        &mut self,
+        query: &str,
+        _: &mut Window,
+        _: &mut Context<ListState<Self>>,
+    ) -> Task<()> {
+        self.query = query.trim().to_string();
+        self.apply_filter();
+        Task::ready(())
+    }
+
+    fn items_count(&self, _: usize, _: &gpui_kit::App) -> usize {
+        self.visible_buckets.len()
+    }
+
+    fn render_item(
+        &mut self,
+        index: IndexPath,
+        _: &mut Window,
+        _: &mut Context<ListState<Self>>,
+    ) -> Option<Self::Item> {
+        let bucket = self.bucket_at(index.row)?.clone();
+        let profile = self.profile.as_deref().unwrap_or("unselected");
+        let row_id: ElementId = format!("bucket-row:{profile}:{bucket}").into();
+        let button_id: ElementId = format!("bucket-label:{profile}:{bucket}").into();
+        Some(
+            ListItem::new(row_id)
+                .confirmed(self.confirmed_bucket.as_deref() == Some(bucket.as_str()))
+                .accessibility_label(bucket.clone())
+                .child(
+                    Button::new(button_id)
+                        .ghost()
+                        .small()
+                        .icon(Icon::new(IconName::Folder).size_4())
+                        .label(bucket.clone())
+                        .tooltip(bucket)
+                        .w_full(),
+                ),
+        )
+    }
+
+    fn set_selected_index(
+        &mut self,
+        _: Option<IndexPath>,
+        _: &mut Window,
+        _: &mut Context<ListState<Self>>,
+    ) {
+    }
+
+    fn confirm(&mut self, _: bool, _: &mut Window, _: &mut Context<ListState<Self>>) {}
+
+    fn render_empty(
+        &mut self,
+        _: &mut Window,
+        cx: &mut Context<ListState<Self>>,
+    ) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .p_3()
+            .gap_2()
+            .items_center()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .when(self.empty_message == "Loading buckets…", |this| {
+                this.child(Spinner::new().xsmall())
+            })
+            .child(self.empty_message.clone())
+    }
+}
 
 impl SelectItem for ObjectVersion {
     type Value = String;
@@ -47,23 +238,63 @@ impl SelectItem for ObjectVersion {
 
 pub struct MainWindow {
     application: Entity<DownloaderApp>,
-    profile_select: Entity<SelectState<Vec<String>>>,
+    profile_select: Entity<ComboboxState<SearchableVec<String>>>,
     version_select: Entity<SelectState<Vec<ObjectVersion>>>,
-    bucket_filter_input: Entity<InputState>,
+    bucket_list: Entity<ListState<BucketListDelegate>>,
+    resizable_state: Entity<ResizableState>,
     bucket_name_input: Entity<InputState>,
     object_key_input: Entity<InputState>,
     destination_input: Entity<InputState>,
+    commands: AwsCommands,
     _subscriptions: Vec<Subscription>,
 }
 
 impl MainWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let profiles_result = aws::profiles::load_profiles();
+        let cli_result = aws::cli::check_aws_cli();
+        Self::new_with_dependencies(
+            window,
+            cx,
+            profiles_result,
+            cli_result,
+            AwsCommands::default(),
+            None,
+        )
+    }
+
+    fn new_with_dependencies(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        profiles_result: Result<Vec<String>, String>,
+        cli_result: Result<(), String>,
+        commands: AwsCommands,
+        fixture_state: Option<AppState>,
+    ) -> Self {
         let application = cx.new(|_| DownloaderApp::new());
-        let profile_select = cx.new(|cx| SelectState::new(Vec::<String>::new(), None, window, cx));
+        application.update(cx, |application, cx| {
+            application.initialize(profiles_result.clone(), cli_result, cx);
+            if let Some(state) = fixture_state {
+                application.state = state;
+                cx.notify();
+            }
+        });
+        let state = application.read(cx).state.clone();
+        let profile_select = cx.new(|cx| {
+            ComboboxState::new(
+                SearchableVec::new(state.profiles.clone()),
+                Vec::new(),
+                window,
+                cx,
+            )
+            .searchable(true)
+        });
         let version_select =
             cx.new(|cx| SelectState::new(Vec::<ObjectVersion>::new(), None, window, cx));
-        let bucket_filter_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter buckets"));
+        let bucket_list = cx.new(|cx| {
+            ListState::new(BucketListDelegate::from_state(&state), window, cx).searchable(true)
+        });
+        let resizable_state = cx.new(|_| ResizableState::default());
         let bucket_name_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Enter bucket name"));
         let object_key_input =
@@ -71,15 +302,10 @@ impl MainWindow {
         let destination_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Choose a local destination"));
 
-        let profiles_result = aws::profiles::load_profiles();
-        let cli_result = aws::cli::check_aws_cli();
-        let profile_items = profiles_result.clone().unwrap_or_default();
-
-        application.update(cx, |application, cx| {
-            application.initialize(profiles_result, cli_result, cx);
-        });
-        profile_select.update(cx, |select, cx| {
-            select.set_items(profile_items, window, cx);
+        profile_select.update(cx, |picker, cx| {
+            if let Some(profile) = state.selected_profile.as_ref() {
+                picker.set_selected_values(std::slice::from_ref(profile), window, cx);
+            }
             cx.notify();
         });
 
@@ -87,8 +313,14 @@ impl MainWindow {
             cx.subscribe_in(
                 &profile_select,
                 window,
-                |this, _, event: &SelectEvent<Vec<String>>, window, cx| {
-                    if let SelectEvent::Confirm(Some(profile)) = event {
+                |this, _, event: &ComboboxEvent<SearchableVec<String>>, window, cx| {
+                    if let ComboboxEvent::Confirm(values) = event
+                        && let Some(profile) = values.first()
+                        && profile_selection_changed(
+                            this.application.read(cx).state.selected_profile.as_deref(),
+                            profile,
+                        )
+                    {
                         this.select_profile(profile.clone(), window, cx);
                     }
                 },
@@ -104,11 +336,14 @@ impl MainWindow {
                 },
             ),
             cx.subscribe_in(
-                &bucket_filter_input,
+                &bucket_list,
                 window,
-                |_, _, event: &InputEvent, _, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        cx.notify();
+                |this, list, event: &ListEvent, window, cx| {
+                    if let ListEvent::Confirm(index) = event {
+                        let bucket = list.read(cx).delegate().bucket_at(index.row).cloned();
+                        if let Some(bucket) = bucket {
+                            this.confirm_bucket(bucket, window, cx);
+                        }
                     }
                 },
             ),
@@ -122,7 +357,9 @@ impl MainWindow {
                             application.set_manual_bucket(value, cx);
                         });
                     }
-                    InputEvent::PressEnter { secondary: false } => {
+                    InputEvent::PressEnter {
+                        secondary: false, ..
+                    } => {
                         this.start_recent_objects_load(false, window, cx);
                     }
                     _ => {}
@@ -139,7 +376,9 @@ impl MainWindow {
                         });
                         this.clear_version_select(window, cx);
                     }
-                    InputEvent::PressEnter { secondary: false } => {
+                    InputEvent::PressEnter {
+                        secondary: false, ..
+                    } => {
                         this.start_version_load(window, cx);
                     }
                     _ => {}
@@ -159,19 +398,78 @@ impl MainWindow {
             ),
         ];
 
-        Self {
+        let mut this = Self {
             application,
             profile_select,
             version_select,
-            bucket_filter_input,
+            bucket_list,
+            resizable_state,
             bucket_name_input,
             object_key_input,
             destination_input,
+            commands,
             _subscriptions: subscriptions,
-        }
+        };
+        this.sync_bucket_list(window, cx);
+        this
+    }
+
+    #[cfg(test)]
+    fn new_for_test(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        state: AppState,
+        commands: AwsCommands,
+    ) -> Self {
+        Self::new_with_dependencies(
+            window,
+            cx,
+            Ok(state.profiles.clone()),
+            Ok(()),
+            commands,
+            Some(state),
+        )
+    }
+
+    fn sync_bucket_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.application.read(cx).state.clone();
+        self.bucket_list.update(cx, |list, cx| {
+            let delegate = list.delegate_mut();
+            delegate.update_from_state(&state);
+            let selected_index = state.selected_bucket.as_ref().and_then(|bucket| {
+                delegate
+                    .visible_buckets
+                    .iter()
+                    .position(|visible| visible == bucket)
+                    .map(IndexPath::new)
+            });
+            list.set_selected_index(selected_index, window, cx);
+            cx.notify();
+        });
+    }
+
+    fn sync_profile_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self
+            .application
+            .read(cx)
+            .state
+            .selected_profile
+            .clone()
+            .into_iter()
+            .collect::<Vec<_>>();
+        self.profile_select.update(cx, |picker, cx| {
+            picker.set_selected_values(&selected, window, cx);
+            cx.notify();
+        });
     }
 
     fn select_profile(&mut self, profile: String, window: &mut Window, cx: &mut Context<Self>) {
+        if !profile_selection_changed(
+            self.application.read(cx).state.selected_profile.as_deref(),
+            &profile,
+        ) {
+            return;
+        }
         let selected = self.application.update(cx, |application, cx| {
             application.select_profile(profile.clone(), cx)
         });
@@ -185,14 +483,37 @@ impl MainWindow {
         self.bucket_name_input.update(cx, |input, cx| {
             input.set_value("", window, cx);
         });
-        self.bucket_filter_input.update(cx, |input, cx| {
-            input.set_value("", window, cx);
+        self.bucket_list.update(cx, |list, cx| {
+            list.set_query("", window, cx);
         });
+        self.sync_profile_picker(window, cx);
+        self.sync_bucket_list(window, cx);
         self.clear_version_select(window, cx);
 
         let requested_profile = profile.clone();
         let result_profile = profile;
         self.spawn_bucket_load(requested_profile, result_profile, window, cx);
+    }
+
+    fn confirm_bucket(&mut self, bucket: String, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.application.read(cx).state.clone();
+        if !bucket_confirmation_enabled(state.loading_buckets, state.downloading) {
+            return;
+        }
+
+        let changed = state.selected_bucket.as_deref() != Some(bucket.as_str());
+        let selected = self
+            .application
+            .update(cx, |application, cx| application.select_bucket(bucket, cx));
+        if !selected {
+            return;
+        }
+
+        self.sync_bucket_list(window, cx);
+        if changed {
+            self.clear_version_select(window, cx);
+            self.start_recent_objects_load(false, window, cx);
+        }
     }
 
     fn refresh_buckets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -204,6 +525,7 @@ impl MainWindow {
             Err(_) => return,
         };
 
+        self.sync_bucket_list(window, cx);
         self.spawn_bucket_load(profile.clone(), profile, window, cx);
     }
 
@@ -220,6 +542,7 @@ impl MainWindow {
         };
 
         let application = self.application.clone();
+        let list_recent_objects = self.commands.list_recent_objects.clone();
         let request_for_cli = request.clone();
         window
             .spawn(cx, async move |cx| {
@@ -231,9 +554,7 @@ impl MainWindow {
                 } = request_for_cli;
                 let result = cx
                     .background_executor()
-                    .spawn(
-                        async move { aws::cli::list_recent_objects(&profile, &bucket, &cancelled) },
-                    )
+                    .spawn(async move { list_recent_objects(&profile, &bucket, cancelled) })
                     .await;
 
                 let result = match result {
@@ -276,18 +597,38 @@ impl MainWindow {
     ) {
         let application = self.application.clone();
         let version_select = self.version_select.clone();
+        let list_buckets = self.commands.list_buckets.clone();
+        let bucket_list = self.bucket_list.clone();
         let previous_bucket = self.application.read(cx).state.selected_bucket.clone();
         window
             .spawn(cx, async move |cx| {
                 let result = cx
                     .background_executor()
-                    .spawn(async move { aws::cli::list_buckets(&requested_profile) })
+                    .spawn(async move { list_buckets(&requested_profile) })
                     .await;
 
                 let _ = cx.update(|window, cx| {
                     let accepted = application.update(cx, |application, cx| {
                         application.finish_bucket_load(&result_profile, result, cx)
                     });
+
+                    if accepted {
+                        let state = application.read(cx).state.clone();
+                        bucket_list.update(cx, |list, cx| {
+                            let delegate = list.delegate_mut();
+                            delegate.update_from_state(&state);
+                            let selected_index =
+                                state.selected_bucket.as_ref().and_then(|bucket| {
+                                    delegate
+                                        .visible_buckets
+                                        .iter()
+                                        .position(|visible| visible == bucket)
+                                        .map(IndexPath::new)
+                                });
+                            list.set_selected_index(selected_index, window, cx);
+                            cx.notify();
+                        });
+                    }
 
                     if accepted && application.read(cx).state.selected_bucket != previous_bucket {
                         version_select.update(cx, |select, cx| {
@@ -312,6 +653,7 @@ impl MainWindow {
 
         let application = self.application.clone();
         let version_select = self.version_select.clone();
+        let list_versions = self.commands.list_versions.clone();
         let request_for_cli = request.clone();
         window
             .spawn(cx, async move |cx| {
@@ -323,7 +665,7 @@ impl MainWindow {
                 } = request_for_cli;
                 let result = cx
                     .background_executor()
-                    .spawn(async move { aws::cli::list_object_versions(&profile, &bucket, &key) })
+                    .spawn(async move { list_versions(&profile, &bucket, &key) })
                     .await;
                 let versions = result.clone().unwrap_or_default();
 
@@ -400,19 +742,14 @@ impl MainWindow {
         } = request;
         let destination_display = destination.display().to_string();
         let application = self.application.clone();
+        let download = self.commands.download.clone();
 
         window
             .spawn(cx, async move |cx| {
                 let result = cx
                     .background_executor()
                     .spawn(async move {
-                        aws::cli::download_object(
-                            &profile,
-                            &bucket,
-                            &key,
-                            version_id.as_deref(),
-                            &destination,
-                        )
+                        download(&profile, &bucket, &key, version_id.as_deref(), &destination)
                     })
                     .await;
 
@@ -427,18 +764,21 @@ impl MainWindow {
 
     fn render_sidebar(&self, state: &AppState, cx: &mut Context<Self>) -> impl IntoElement {
         let muted_foreground = cx.theme().muted_foreground;
-        let profile_select = Select::new(&self.profile_select)
+        let profile_select = Combobox::new(&self.profile_select)
             .placeholder("Select an AWS profile")
+            .search_placeholder("Search profiles")
+            .empty(|_, cx| {
+                div()
+                    .p_3()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No matching AWS profiles")
+            })
             .disabled(state.profiles.is_empty())
             .w_full();
-        let filter = self.bucket_filter_input.read(cx).value().to_string();
-        let filtered_buckets = filter_buckets(&state.buckets, &filter);
-        let selected_bucket_hidden = state.selected_bucket.as_deref().is_some_and(|selected| {
-            !filter.trim().is_empty()
-                && !filtered_buckets
-                    .iter()
-                    .any(|bucket| bucket.as_str() == selected)
-        });
+        let profile_picker = div().id("profile-picker").child(profile_select);
+        #[cfg(test)]
+        let profile_picker = profile_picker.test_support();
         let refresh_disabled =
             state.selected_profile.is_none() || state.loading_buckets || state.downloading;
         let refresh = Button::new("refresh-buckets")
@@ -451,10 +791,22 @@ impl MainWindow {
                 this.refresh_buckets(window, cx);
             }));
 
+        let footer_label = if state.manual_bucket_entry {
+            "Manual bucket entry".to_string()
+        } else {
+            format!("{} buckets loaded", state.buckets.len())
+        };
+
+        let selected_bucket_hidden = self
+            .bucket_list
+            .read(cx)
+            .delegate()
+            .selected_bucket_is_hidden();
         let header = v_flex()
+            .id("sidebar-header")
             .gap_3()
-            .p_2()
             .w_full()
+            .p_3()
             .child(
                 h_flex()
                     .gap_2()
@@ -472,7 +824,7 @@ impl MainWindow {
                     ),
             )
             .child(div().text_xs().font_medium().child("AWS profile"))
-            .child(profile_select)
+            .child(profile_picker)
             .child(div().text_xs().text_color(muted_foreground).child(
                 if state.selected_profile.is_some() {
                     "AWS CLI profile active"
@@ -480,89 +832,77 @@ impl MainWindow {
                     "Choose a profile to load buckets"
                 },
             ))
-            .child(if state.manual_bucket_entry {
-                v_flex()
-                    .gap_2()
-                    .w_full()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
                     .child(
-                        h_flex()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_medium()
-                                    .child(format!("Buckets · {}", state.buckets.len())),
-                            )
-                            .child(refresh),
+                        div()
+                            .text_xs()
+                            .font_medium()
+                            .child(format!("Buckets · {}", state.buckets.len())),
                     )
-                    .child(div().text_xs().font_medium().child("Bucket name"))
+                    .child(refresh),
+            )
+            .when(state.manual_bucket_entry, |this| {
+                this.child(div().text_xs().font_medium().child("Bucket name"))
                     .child(
                         Input::new(&self.bucket_name_input)
                             .cleanable(true)
                             .disabled(state.loading_buckets || state.downloading)
                             .w_full(),
                     )
-                    .child(div().text_xs().text_color(muted_foreground).child(
-                        "Bucket listing is unavailable for this profile. Enter a name manually.",
-                    ))
-                    .into_any_element()
-            } else {
-                v_flex()
-                    .gap_2()
-                    .w_full()
                     .child(
-                        h_flex()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_medium()
-                                    .child(format!("Buckets · {}", state.buckets.len())),
-                            )
-                            .child(refresh),
-                    )
-                    .child(
-                        Input::new(&self.bucket_filter_input)
-                            .prefix(Icon::new(IconName::Search).size_4())
-                            .cleanable(true)
-                            .disabled(state.selected_profile.is_none())
-                            .w_full(),
-                    )
-                    .child(if selected_bucket_hidden {
                         div()
                             .text_xs()
                             .text_color(muted_foreground)
-                            .child("Selected bucket is hidden by the filter")
-                            .into_any_element()
-                    } else {
-                        div().into_any_element()
-                    })
-                    .into_any_element()
+                            .child("Enter a bucket name, then press Enter to scan it."),
+                    )
+            })
+            .when(selected_bucket_hidden, |this| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted_foreground)
+                        .child("Selected bucket is hidden by the filter"),
+                )
             });
+        #[cfg(test)]
+        let header = header.test_support();
+        let bucket_list = List::new(&self.bucket_list)
+            .search_placeholder("Filter buckets")
+            .w_full()
+            .h_full();
+        let footer = div()
+            .id("sidebar-footer")
+            .w_full()
+            .p_3()
+            .text_xs()
+            .text_color(muted_foreground)
+            .child(footer_label);
+        #[cfg(test)]
+        let footer = footer.test_support();
 
-        let footer_label = if state.manual_bucket_entry {
-            "Manual bucket entry".to_string()
-        } else {
-            format!("{} buckets loaded", state.buckets.len())
-        };
-
-        Sidebar::left()
-            .collapsible(false)
-            .w(rems(SIDEBAR_WIDTH_REMS))
-            .header(header)
-            .child(SidebarGroup::new("Buckets").child(self.render_bucket_menu(
-                state,
-                &filtered_buckets,
-                &filter,
-                cx,
-            )))
-            .footer(
-                div()
-                    .p_2()
-                    .text_xs()
-                    .text_color(muted_foreground)
-                    .child(footer_label),
+        let sidebar = v_flex()
+            .id("sidebar-content")
+            .h_full()
+            .w_full()
+            .overflow_hidden()
+            .bg(cx.theme().sidebar)
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .child(header)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(bucket_list),
             )
+            .child(footer);
+        #[cfg(test)]
+        let sidebar = sidebar.test_support();
+        sidebar
     }
 
     fn render_recent_objects(&self, state: &AppState, cx: &mut Context<Self>) -> impl IntoElement {
@@ -738,69 +1078,36 @@ impl MainWindow {
             .child(content)
     }
 
-    fn render_bucket_menu(
-        &self,
-        state: &AppState,
-        filtered_buckets: &[String],
-        filter: &str,
-        cx: &mut Context<Self>,
-    ) -> SidebarMenu {
-        let main_window = cx.entity();
-        let items = if state.loading_buckets && state.buckets.is_empty() {
-            vec![
-                SidebarMenuItem::new("Loading buckets…")
-                    .disable(true)
-                    .suffix(Spinner::new().xsmall()),
-            ]
-        } else if state.selected_profile.is_none() {
-            vec![SidebarMenuItem::new("Select a profile to list buckets").disable(true)]
-        } else if state.manual_bucket_entry {
-            vec![SidebarMenuItem::new("Enter a bucket name above").disable(true)]
-        } else if state.buckets.is_empty() {
-            let message = match &state.status {
-                Some(AppStatus::Error(message)) => message.clone(),
-                _ => "No S3 buckets found for this profile".to_string(),
-            };
-            vec![SidebarMenuItem::new(message).disable(true)]
-        } else if filtered_buckets.is_empty() {
-            vec![
-                SidebarMenuItem::new(format!("No buckets match “{}”", filter.trim())).disable(true),
-            ]
-        } else {
-            filtered_buckets
-                .iter()
-                .cloned()
-                .map(|bucket| {
-                    let active = state.selected_bucket.as_deref() == Some(bucket.as_str());
-                    let requested_bucket = bucket.clone();
-                    let main_window = main_window.clone();
-                    SidebarMenuItem::new(bucket)
-                        .icon(IconName::Folder)
-                        .active(active)
-                        .on_click(move |_, window, app| {
-                            main_window.update(app, |this, cx| {
-                                let changed =
-                                    this.application.read(cx).state.selected_bucket.as_deref()
-                                        != Some(requested_bucket.as_str());
-                                let selected = this.application.update(cx, |application, cx| {
-                                    application.select_bucket(requested_bucket.clone(), cx)
-                                });
-                                if selected && changed {
-                                    this.clear_version_select(window, cx);
-                                    this.start_recent_objects_load(false, window, cx);
-                                }
-                            });
-                        })
-                })
-                .collect()
-        };
+    fn resize_sidebar_by(&mut self, change_rems: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let width_rem = window.bounds().size.width / window.rem_size();
+        let max_rem = sidebar_width_max_rem(width_rem);
+        let current_rem = self
+            .resizable_state
+            .read(cx)
+            .sizes()
+            .first()
+            .copied()
+            .map(|size| size / window.rem_size())
+            .unwrap_or(SIDEBAR_WIDTH_REMS);
+        let target_rem = (current_rem + change_rems).clamp(SIDEBAR_MIN_WIDTH_REMS, max_rem);
+        let target_width = rems(target_rem).to_pixels(window.rem_size());
+        self.resizable_state.update(cx, |state, cx| {
+            state.resize_panel(0, target_width, window, cx);
+        });
+    }
 
-        SidebarMenu::new().children(items)
+    fn reset_sidebar_width(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let width_rem = window.bounds().size.width / window.rem_size();
+        let target_rem = SIDEBAR_WIDTH_REMS.min(sidebar_width_max_rem(width_rem));
+        let target_width = rems(target_rem).to_pixels(window.rem_size());
+        self.resizable_state.update(cx, |state, cx| {
+            state.resize_panel(0, target_width, window, cx);
+        });
     }
 }
 
 impl Render for MainWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.application.read(cx).state.clone();
         let has_bucket = state.selected_bucket.is_some();
         let form_disabled = !has_bucket || state.loading_buckets || state.downloading;
@@ -996,22 +1303,52 @@ impl Render for MainWindow {
                 ),
             );
 
+        let rem_size = window.rem_size();
+        let total_width_rem = window.bounds().size.width / rem_size;
+        let sidebar_max_rem = sidebar_width_max_rem(total_width_rem);
+        let sidebar_min = rems(SIDEBAR_MIN_WIDTH_REMS).to_pixels(rem_size);
+        let sidebar_max = rems(sidebar_max_rem).to_pixels(rem_size);
+        let sidebar_default = rems(SIDEBAR_WIDTH_REMS.min(sidebar_max_rem)).to_pixels(rem_size);
+        let workspace_min = rems(WORKSPACE_MIN_WIDTH_REMS).to_pixels(rem_size);
+
         div()
-            .h_flex()
-            .items_start()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(self.render_sidebar(&state, cx))
+            .key_context("MainWindow")
+            .on_action(cx.listener(|this, _: &NarrowSidebar, window, cx| {
+                this.resize_sidebar_by(-1.0, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &WidenSidebar, window, cx| {
+                this.resize_sidebar_by(1.0, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ResetSidebar, window, cx| {
+                this.reset_sidebar_width(window, cx);
+            }))
             .child(
-                v_flex().flex_1().h_full().overflow_hidden().child(
-                    v_flex().size_full().overflow_y_scrollbar().child(
-                        v_flex()
-                            .w_full()
-                            .max_w(rems(CONTENT_MAX_WIDTH_REMS))
-                            .child(content),
+                h_resizable("s3-downloader-panels")
+                    .with_state(&self.resizable_state)
+                    .child(
+                        resizable_panel()
+                            .size(sidebar_default)
+                            .size_range(sidebar_min..sidebar_max)
+                            .flex_none()
+                            .child(self.render_sidebar(&state, cx)),
+                    )
+                    .child(
+                        resizable_panel()
+                            .size_range(workspace_min..gpui_kit::Pixels::MAX)
+                            .child(
+                                v_flex().size_full().overflow_hidden().child(
+                                    v_flex().size_full().overflow_y_scrollbar().child(
+                                        v_flex()
+                                            .w_full()
+                                            .max_w(rems(CONTENT_MAX_WIDTH_REMS))
+                                            .child(content),
+                                    ),
+                                ),
+                            ),
                     ),
-                ),
             )
     }
 }
@@ -1052,7 +1389,7 @@ fn readiness_for(state: &AppState) -> &'static str {
 fn section_heading(
     title: &'static str,
     hint: &'static str,
-    muted_foreground: gpui::Hsla,
+    muted_foreground: gpui_kit::Hsla,
 ) -> impl IntoElement {
     v_flex()
         .gap_1()
@@ -1066,7 +1403,7 @@ fn field_row(
     control: impl IntoElement,
     hint: &'static str,
     optional: bool,
-    muted_foreground: gpui::Hsla,
+    muted_foreground: gpui_kit::Hsla,
 ) -> impl IntoElement {
     h_flex()
         .items_start()
@@ -1141,7 +1478,7 @@ fn destination_directory(destination: &str) -> PathBuf {
 async fn set_application_error(
     application: &Entity<DownloaderApp>,
     error: String,
-    cx: &mut gpui::AsyncWindowContext,
+    cx: &mut gpui_kit::AsyncWindowContext,
 ) {
     let _ = cx.update(|_, cx| {
         application.update(cx, |application, cx| {
@@ -1152,8 +1489,85 @@ async fn set_application_error(
 
 #[cfg(test)]
 mod tests {
-    use super::{filter_buckets, readiness_for};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{
+        AwsCommands, MainWindow, bucket_confirmation_enabled, filter_buckets,
+        profile_selection_changed, readiness_for, sidebar_width_max_rem,
+    };
     use crate::models::AppState;
+    use crate::models::{ObjectVersion, RecentObject, RecentObjectsState};
+    use crate::{NarrowSidebar, ResetSidebar, WidenSidebar};
+    use gpui_kit::{
+        AppContext, Bounds, Entity, Focusable, KeyBinding, ScrollDelta, TestAppContext,
+        WindowBounds, WindowOptions,
+        component::theme::{Theme, ThemeMode},
+        point, px, size,
+        test::{TestAppContextExt, TestWindowExt},
+    };
+
+    fn fixture_state(selected_profile: Option<&str>, buckets: &[&str]) -> AppState {
+        AppState {
+            profiles: vec!["default".to_string(), "production".to_string()],
+            selected_profile: selected_profile.map(str::to_string),
+            buckets: buckets.iter().map(|bucket| (*bucket).to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn fixture_commands(
+        bucket_loads: std::sync::Arc<AtomicUsize>,
+        recent_loads: std::sync::Arc<AtomicUsize>,
+    ) -> AwsCommands {
+        AwsCommands {
+            list_buckets: std::sync::Arc::new(move |_| {
+                bucket_loads.fetch_add(1, Ordering::SeqCst);
+                Ok(vec!["alpha-bucket".to_string(), "beta-bucket".to_string()])
+            }),
+            list_recent_objects: std::sync::Arc::new(move |_, _, _| {
+                recent_loads.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(Vec::new()))
+            }),
+            list_versions: std::sync::Arc::new(|_, _, _| Ok(Vec::new())),
+            download: std::sync::Arc::new(|_, _, _, _, _| Ok(())),
+        }
+    }
+
+    fn open_main_window(
+        cx: &mut TestAppContext,
+        state: AppState,
+        commands: AwsCommands,
+        width: f32,
+        height: f32,
+    ) -> (gpui_kit::AnyWindowHandle, Entity<MainWindow>) {
+        cx.update(gpui_kit::init);
+        cx.update(|cx| {
+            cx.bind_keys([
+                KeyBinding::new("cmd-alt-left", NarrowSidebar, Some("MainWindow")),
+                KeyBinding::new("cmd-alt-right", WidenSidebar, Some("MainWindow")),
+                KeyBinding::new("cmd-alt-0", ResetSidebar, Some("MainWindow")),
+            ]);
+        });
+
+        cx.update(|cx| {
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds {
+                        origin: Default::default(),
+                        size: size(px(width), px(height)),
+                    })),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| cx.new(|cx| MainWindow::new_for_test(window, cx, state, commands)),
+            )
+            .expect("open MainWindow fixture")
+        })
+    }
+
+    fn run_until_parked(cx: &mut TestAppContext) {
+        cx.run_until_parked();
+    }
 
     #[test]
     fn bucket_filter_preserves_order_for_an_empty_query() {
@@ -1208,5 +1622,654 @@ mod tests {
 
         state.destination = "/tmp/object.txt".to_string();
         assert_eq!(readiness_for(&state), "Ready to download");
+    }
+
+    #[test]
+    fn profile_selection_only_commits_a_different_value() {
+        assert!(!profile_selection_changed(Some("staging"), "staging"));
+        assert!(profile_selection_changed(Some("staging"), "production"));
+        assert!(profile_selection_changed(None, "default"));
+    }
+
+    #[test]
+    fn bucket_confirmation_is_blocked_during_conflicting_work() {
+        assert!(bucket_confirmation_enabled(false, false));
+        assert!(!bucket_confirmation_enabled(true, false));
+        assert!(!bucket_confirmation_enabled(false, true));
+        assert!(!bucket_confirmation_enabled(true, true));
+    }
+
+    #[test]
+    fn sidebar_maximum_reserves_the_minimum_workspace_width() {
+        assert_eq!(sidebar_width_max_rem(60.0), 28.0);
+        assert_eq!(sidebar_width_max_rem(56.25), 26.25);
+    }
+
+    #[gpui_kit::test]
+    async fn profile_picker_searches_locally_and_commits_only_a_changed_profile(
+        cx: &mut TestAppContext,
+    ) {
+        let bucket_loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let recent_loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let commands = fixture_commands(bucket_loads.clone(), recent_loads.clone());
+        let (handle, main_window) =
+            open_main_window(cx, fixture_state(None, &[]), commands, 960.0, 640.0);
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let profile_picker = main_window.read(cx).profile_select.entity_id();
+            window
+                .within("profile-picker")
+                .click(("multi-combo-box", profile_picker), cx);
+            window.input("production", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert_eq!(bucket_loads.load(Ordering::SeqCst), 0);
+        assert_eq!(recent_loads.load(Ordering::SeqCst), 0);
+        cx.update(|cx| {
+            assert_eq!(
+                main_window
+                    .read(cx)
+                    .profile_select
+                    .read(cx)
+                    .query(cx)
+                    .as_ref(),
+                "production"
+            );
+            assert_eq!(
+                main_window
+                    .read(cx)
+                    .application
+                    .read(cx)
+                    .state
+                    .selected_profile,
+                None
+            );
+        });
+
+        cx.update_window(handle, |_, window, cx| {
+            window.press("down", cx);
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.wait_for(handle, std::time::Duration::from_secs(1), |_, _| {
+            bucket_loads.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        assert_eq!(bucket_loads.load(Ordering::SeqCst), 1);
+        cx.update(|cx| {
+            assert_eq!(
+                main_window
+                    .read(cx)
+                    .application
+                    .read(cx)
+                    .state
+                    .selected_profile
+                    .as_deref(),
+                Some("production")
+            );
+        });
+
+        // Dismissing a searchable picker emits its active value; it must not
+        // make a duplicate bucket request or lose focus restoration.
+        cx.update_window(handle, |_, window, cx| {
+            let profile_picker = main_window.read(cx).profile_select.entity_id();
+            window
+                .within("profile-picker")
+                .click(("multi-combo-box", profile_picker), cx);
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert!(
+                main_window
+                    .read(cx)
+                    .profile_select
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+        })
+        .unwrap();
+        cx.update(|cx| {
+            main_window.update(cx, |this, cx| {
+                this.profile_select.update(cx, |_, cx| {
+                    cx.emit(super::ComboboxEvent::Confirm(vec![
+                        "production".to_string(),
+                    ]));
+                });
+            });
+        });
+        run_until_parked(cx);
+        assert_eq!(bucket_loads.load(Ordering::SeqCst), 1);
+        assert_eq!(recent_loads.load(Ordering::SeqCst), 0);
+    }
+
+    #[gpui_kit::test]
+    async fn bucket_keyboard_highlights_until_confirmation_and_suppresses_duplicate_scans(
+        cx: &mut TestAppContext,
+    ) {
+        let bucket_loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let recent_loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let commands = fixture_commands(bucket_loads, recent_loads.clone());
+        let (handle, main_window) = open_main_window(
+            cx,
+            fixture_state(Some("default"), &["alpha-bucket", "beta-bucket"]),
+            commands,
+            960.0,
+            640.0,
+        );
+
+        cx.update_window(handle, |_, window, cx| {
+            let bucket_list = main_window.read(cx).bucket_list.clone();
+            bucket_list.update(cx, |list, cx| list.focus(window, cx));
+            window.render_frame(cx);
+            window.press("down", cx);
+            assert_eq!(
+                main_window.read(cx).bucket_list.read(cx).selected_index(),
+                Some(super::IndexPath::new(0))
+            );
+            assert_eq!(
+                main_window
+                    .read(cx)
+                    .application
+                    .read(cx)
+                    .state
+                    .selected_bucket,
+                None
+            );
+            assert_eq!(recent_loads.load(Ordering::SeqCst), 0);
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.wait_for(handle, std::time::Duration::from_secs(1), |_, _| {
+            recent_loads.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        cx.update_window(handle, |_, window, cx| {
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        run_until_parked(cx);
+        assert_eq!(recent_loads.load(Ordering::SeqCst), 1);
+
+        cx.update_window(handle, |_, window, cx| {
+            window.click("bucket-label:default:beta-bucket", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.wait_for(handle, std::time::Duration::from_secs(1), |_, _| {
+            recent_loads.load(Ordering::SeqCst) == 2
+        })
+        .await;
+        cx.update_window(handle, |_, window, cx| {
+            window.click("bucket-label:default:beta-bucket", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        run_until_parked(cx);
+        assert_eq!(recent_loads.load(Ordering::SeqCst), 2);
+        cx.update(|cx| {
+            assert_eq!(
+                main_window
+                    .read(cx)
+                    .application
+                    .read(cx)
+                    .state
+                    .selected_bucket
+                    .as_deref(),
+                Some("beta-bucket")
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    async fn bucket_filter_refresh_and_disabled_confirmation_preserve_selection(
+        cx: &mut TestAppContext,
+    ) {
+        let bucket_loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let recent_loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let commands = fixture_commands(bucket_loads.clone(), recent_loads.clone());
+        let long_bucket = "very-long-client-bucket-name-that-does-not-fit-in-sidebar";
+        let mut state = fixture_state(
+            Some("default"),
+            &["alpha-bucket", "beta-bucket", long_bucket],
+        );
+        state.selected_bucket = Some("beta-bucket".to_string());
+        let (handle, main_window) = open_main_window(cx, state, commands, 960.0, 640.0);
+
+        cx.update_window(handle, |_, window, cx| {
+            let list = main_window.read(cx).bucket_list.clone();
+            list.update(cx, |list, cx| list.set_query(" ALPHA ", window, cx));
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find("bucket-label:default:alpha-bucket")
+                    .is_some()
+            );
+            assert!(
+                window
+                    .try_find("bucket-label:default:beta-bucket")
+                    .is_none()
+            );
+            assert_eq!(recent_loads.load(Ordering::SeqCst), 0);
+            list.update(cx, |list, cx| list.set_query("", window, cx));
+            window.render_frame(cx);
+            assert_eq!(
+                window
+                    .find(format!("bucket-row:default:{long_bucket}"))
+                    .label(),
+                Some(long_bucket)
+            );
+
+            main_window.update(cx, |this, cx| {
+                this.application.update(cx, |app, cx| {
+                    app.state.downloading = true;
+                    cx.notify();
+                });
+                this.confirm_bucket("alpha-bucket".to_string(), window, cx);
+            });
+            assert_eq!(recent_loads.load(Ordering::SeqCst), 0);
+        })
+        .unwrap();
+
+        cx.update_window(handle, |_, window, cx| {
+            main_window.update(cx, |this, cx| {
+                this.application.update(cx, |app, cx| {
+                    app.state.downloading = false;
+                    cx.notify();
+                });
+                this.refresh_buckets(window, cx);
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.wait_for(handle, std::time::Duration::from_secs(1), |_, _| {
+            bucket_loads.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        cx.wait_for(handle, std::time::Duration::from_secs(1), |_, cx| {
+            !main_window
+                .read(cx)
+                .application
+                .read(cx)
+                .state
+                .loading_buckets
+        })
+        .await;
+        cx.update(|cx| {
+            assert_eq!(
+                main_window
+                    .read(cx)
+                    .application
+                    .read(cx)
+                    .state
+                    .selected_bucket
+                    .as_deref(),
+                Some("beta-bucket")
+            );
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                main_window
+                    .read(cx)
+                    .bucket_list
+                    .read(cx)
+                    .delegate()
+                    .confirmed_bucket
+                    .as_deref(),
+                Some("beta-bucket")
+            );
+        })
+        .unwrap();
+        assert_eq!(recent_loads.load(Ordering::SeqCst), 0);
+    }
+
+    #[gpui_kit::test]
+    async fn bucket_list_scroll_does_not_move_sidebar_header_or_footer(cx: &mut TestAppContext) {
+        let mut state = fixture_state(Some("default"), &[]);
+        state.buckets = (0..80)
+            .map(|index| format!("scroll-bucket-{index:02}"))
+            .collect();
+        let (handle, main_window) = open_main_window(
+            cx,
+            state,
+            fixture_commands(
+                std::sync::Arc::new(AtomicUsize::new(0)),
+                std::sync::Arc::new(AtomicUsize::new(0)),
+            ),
+            960.0,
+            640.0,
+        );
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let header_before = window.find("sidebar-header").bounds();
+            let footer_before = window.find("sidebar-footer").bounds();
+            let list = main_window.read(cx).bucket_list.clone();
+            let offset_before = list.read(cx).scroll_handle().offset().y;
+
+            window.scroll(
+                "bucket-row:default:scroll-bucket-00",
+                ScrollDelta::Lines(point(0.0, -24.0)),
+                cx,
+            );
+            window.render_frame(cx);
+
+            let offset_after = list.read(cx).scroll_handle().offset().y;
+            assert_ne!(offset_before, offset_after, "bucket list should scroll");
+            assert_eq!(window.find("sidebar-header").bounds(), header_before);
+            assert_eq!(window.find("sidebar-footer").bounds(), footer_before);
+            assert!(
+                window
+                    .try_find("bucket-row:default:scroll-bucket-00")
+                    .is_none(),
+                "the first bucket should leave the list viewport"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn recent_object_selection_updates_and_focuses_key_and_clears_version(
+        cx: &mut TestAppContext,
+    ) {
+        let bucket_loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let recent_loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut state = fixture_state(Some("default"), &["alpha-bucket"]);
+        state.selected_bucket = Some("alpha-bucket".to_string());
+        state.object_key = "old/key.csv".to_string();
+        state.versions = vec![ObjectVersion {
+            key: "old/key.csv".to_string(),
+            version_id: "version-1".to_string(),
+            is_latest: true,
+            last_modified: "2026-01-01T00:00:00Z".to_string(),
+            size: 12,
+        }];
+        state.selected_version_id = Some("version-1".to_string());
+        state.recent_objects = RecentObjectsState::Loaded {
+            profile: "default".to_string(),
+            bucket: "alpha-bucket".to_string(),
+            request_id: 1,
+            objects: vec![RecentObject {
+                key: "reports/latest.csv".to_string(),
+                last_modified: chrono::Utc::now(),
+            }],
+        };
+        let commands = fixture_commands(bucket_loads, recent_loads.clone());
+        let (handle, main_window) = open_main_window(cx, state, commands, 960.0, 640.0);
+
+        cx.update_window(handle, |_, window, cx| {
+            main_window.update(cx, |this, cx| {
+                let version = ObjectVersion {
+                    key: "old/key.csv".to_string(),
+                    version_id: "version-1".to_string(),
+                    is_latest: true,
+                    last_modified: "2026-01-01T00:00:00Z".to_string(),
+                    size: 12,
+                };
+                this.version_select.update(cx, |select, cx| {
+                    select.set_items(vec![version], window, cx);
+                    select.set_selected_index(Some(super::IndexPath::new(0)), window, cx);
+                });
+            });
+            window.render_frame(cx);
+            window.click(
+                "recent-object:7:default:12:alpha-bucket:reports/latest.csv",
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(
+                main_window
+                    .read(cx)
+                    .object_key_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            );
+        })
+        .unwrap();
+
+        cx.update(|cx| {
+            let state = &main_window.read(cx).application.read(cx).state;
+            assert_eq!(state.object_key, "reports/latest.csv");
+            assert!(state.versions.is_empty());
+            assert_eq!(state.selected_version_id, None);
+            assert_eq!(
+                main_window.read(cx).object_key_input.read(cx).value(),
+                "reports/latest.csv"
+            );
+            assert_eq!(
+                main_window
+                    .read(cx)
+                    .version_select
+                    .read(cx)
+                    .selected_index(cx),
+                None
+            );
+        });
+        assert_eq!(recent_loads.load(Ordering::SeqCst), 0);
+    }
+
+    #[gpui_kit::test]
+    async fn changing_buckets_cancels_old_scan_and_completion_preserves_typed_key(
+        cx: &mut TestAppContext,
+    ) {
+        let bucket_loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let recent_loads = std::sync::Arc::new(AtomicUsize::new(0));
+        let cancellation_tokens = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls = recent_loads.clone();
+        let observed_tokens = cancellation_tokens.clone();
+        let commands = AwsCommands {
+            list_buckets: std::sync::Arc::new(move |_| {
+                bucket_loads.fetch_add(1, Ordering::SeqCst);
+                Ok(vec!["alpha-bucket".to_string(), "beta-bucket".to_string()])
+            }),
+            list_recent_objects: std::sync::Arc::new(move |_, bucket, cancelled| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                observed_tokens
+                    .lock()
+                    .unwrap()
+                    .push((bucket.to_string(), cancelled.clone()));
+                if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                    return Ok(None);
+                }
+                Ok(Some(vec![RecentObject {
+                    key: format!("{bucket}/fresh.txt"),
+                    last_modified: chrono::Utc::now(),
+                }]))
+            }),
+            list_versions: std::sync::Arc::new(|_, _, _| Ok(Vec::new())),
+            download: std::sync::Arc::new(|_, _, _, _, _| Ok(())),
+        };
+        let (handle, main_window) = open_main_window(
+            cx,
+            fixture_state(Some("default"), &["alpha-bucket", "beta-bucket"]),
+            commands,
+            960.0,
+            640.0,
+        );
+
+        cx.update_window(handle, |_, window, cx| {
+            main_window.update(cx, |this, cx| {
+                this.confirm_bucket("alpha-bucket".to_string(), window, cx);
+                this.confirm_bucket("beta-bucket".to_string(), window, cx);
+                this.application.update(cx, |application, cx| {
+                    application.set_object_key("typed/during-scan.txt".to_string(), cx);
+                });
+                this.object_key_input.update(cx, |input, cx| {
+                    input.set_value("typed/during-scan.txt", window, cx);
+                });
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.wait_for(handle, std::time::Duration::from_secs(1), |_, cx| {
+            matches!(
+                &main_window.read(cx).application.read(cx).state.recent_objects,
+                RecentObjectsState::Loaded { bucket, .. } if bucket == "beta-bucket"
+            )
+        })
+        .await;
+
+        cx.update(|cx| {
+            let state = &main_window.read(cx).application.read(cx).state;
+            assert_eq!(state.selected_bucket.as_deref(), Some("beta-bucket"));
+            assert_eq!(state.object_key, "typed/during-scan.txt");
+            assert_eq!(
+                main_window.read(cx).object_key_input.read(cx).value(),
+                "typed/during-scan.txt"
+            );
+            assert!(matches!(
+                &state.recent_objects,
+                RecentObjectsState::Loaded { objects, .. }
+                    if objects.first().is_some_and(|object| object.key == "beta-bucket/fresh.txt")
+            ));
+        });
+        assert_eq!(recent_loads.load(Ordering::SeqCst), 2);
+        assert!(
+            cancellation_tokens
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(bucket, token)| bucket == "alpha-bucket"
+                    && token.load(std::sync::atomic::Ordering::Acquire))
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn sidebar_keyboard_controls_and_drag_respect_width_constraints(cx: &mut TestAppContext) {
+        let (handle, main_window) = open_main_window(
+            cx,
+            fixture_state(Some("default"), &[]),
+            fixture_commands(
+                std::sync::Arc::new(AtomicUsize::new(0)),
+                std::sync::Arc::new(AtomicUsize::new(0)),
+            ),
+            960.0,
+            640.0,
+        );
+
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let bucket_list = main_window.read(cx).bucket_list.clone();
+            bucket_list.update(cx, |list, cx| list.focus(window, cx));
+            window.render_frame(cx);
+            let initial =
+                main_window.read(cx).resizable_state.read(cx).sizes()[0] / window.rem_size();
+            assert!((initial - 22.0).abs() < 0.1);
+            window.press("cmd-alt-right", cx);
+            window.render_frame(cx);
+            let widened =
+                main_window.read(cx).resizable_state.read(cx).sizes()[0] / window.rem_size();
+            assert!(
+                (widened - 23.0).abs() < 0.1,
+                "expected keyboard shortcut to widen 22rem sidebar to 23rem, got {widened}rem"
+            );
+            window.press("cmd-alt-0", cx);
+            window.render_frame(cx);
+            let reset =
+                main_window.read(cx).resizable_state.read(cx).sizes()[0] / window.rem_size();
+            assert!((reset - 22.0).abs() < 0.1);
+
+            for _ in 0..20 {
+                window.press("cmd-alt-right", cx);
+            }
+            window.render_frame(cx);
+            let maximum =
+                main_window.read(cx).resizable_state.read(cx).sizes()[0] / window.rem_size();
+            assert!((maximum - 28.0).abs() < 0.1);
+
+            let sidebar_bounds = window.find("sidebar-content").bounds();
+            let from = gpui_kit::point(sidebar_bounds.right() - px(1.0), sidebar_bounds.center().y);
+            window.drag(from, gpui_kit::point(from.x - px(24.0), from.y), cx);
+            window.render_frame(cx);
+            let dragged =
+                main_window.read(cx).resizable_state.read(cx).sizes()[0] / window.rem_size();
+            assert!(dragged <= 28.1);
+            assert!(dragged >= 18.0);
+            assert!(dragged < maximum);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn minimum_and_default_window_sizes_render_in_light_and_dark_themes(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, main_window) = open_main_window(
+            cx,
+            fixture_state(None, &[]),
+            fixture_commands(
+                std::sync::Arc::new(AtomicUsize::new(0)),
+                std::sync::Arc::new(AtomicUsize::new(0)),
+            ),
+            900.0,
+            600.0,
+        );
+        for theme in [ThemeMode::Light, ThemeMode::Dark] {
+            cx.update(|cx| Theme::change(theme, None, cx));
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let rem_size = window.rem_size();
+                let sizes = main_window
+                    .read(cx)
+                    .resizable_state
+                    .read(cx)
+                    .sizes()
+                    .clone();
+                assert!((sizes[0] / rem_size - 22.0).abs() < 0.1);
+                assert!(sizes[1] / rem_size >= 30.0);
+                assert!(
+                    window.find("sidebar-content").bounds().size.width
+                        >= super::rems(18.0).to_pixels(rem_size)
+                );
+                let list = main_window.read(cx).bucket_list.clone();
+                list.update(cx, |list, cx| list.focus(window, cx));
+                for _ in 0..20 {
+                    window.press("cmd-alt-right", cx);
+                }
+                window.render_frame(cx);
+                let sizes = main_window
+                    .read(cx)
+                    .resizable_state
+                    .read(cx)
+                    .sizes()
+                    .clone();
+                let sidebar_rem = sizes[0] / window.rem_size();
+                assert!(sidebar_rem <= 26.35);
+                assert!(sidebar_rem >= 18.0);
+                assert!(sizes[1] / window.rem_size() >= 30.0);
+                window.press("cmd-alt-0", cx);
+            })
+            .unwrap();
+        }
+
+        cx.simulate_window_resize(handle, size(px(960.0), px(640.0)));
+        for theme in [ThemeMode::Light, ThemeMode::Dark] {
+            cx.update(|cx| Theme::change(theme, None, cx));
+            cx.update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let rem_size = window.rem_size();
+                let sizes = main_window
+                    .read(cx)
+                    .resizable_state
+                    .read(cx)
+                    .sizes()
+                    .clone();
+                assert!((18.0..=28.0).contains(&(sizes[0] / rem_size)));
+                assert!(sizes[1] / rem_size >= 30.0);
+                assert_eq!(window.bounds().size.width, px(960.0));
+                assert_eq!(window.bounds().size.height, px(640.0));
+                window.press("cmd-alt-0", cx);
+                window.render_frame(cx);
+                let reset = main_window.read(cx).resizable_state.read(cx).sizes()[0] / rem_size;
+                assert!((reset - 22.0).abs() < 0.1);
+            })
+            .unwrap();
+        }
     }
 }

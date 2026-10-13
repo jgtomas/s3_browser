@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use gpui::Context;
+use gpui_kit::Context;
 
 use crate::aws;
 use crate::models::{

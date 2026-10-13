@@ -836,3 +836,48 @@ Acceptance criteria:
 - `README.md` explains the automatic full listing, AWS CLI permission, and
   associated time and LIST-request costs;
 - format, relevant tests, `cargo check`, and Clippy pass.
+
+# Task 18 — Upgrade to GPUI Kit and improve bucket selection
+
+Migrate the application from GPUI Component 0.5.1 to the published GPUI Kit
+0.7.3 release. Improve the bucket-selection workflow with a searchable AWS
+profile picker, a resizable sidebar, and a virtualized bucket list with
+keyboard navigation.
+
+## Acceptance criteria
+
+- Replace separate GPUI, component, and asset dependencies with
+  `gpui-kit = "0.7.3"`, regenerate the lockfile, migrate imports, and bootstrap
+  with bundled assets, `init()`, and `open_window()` while preserving the native
+  window, icons, save dialog, AWS command behavior, and Quit menu.
+- The AWS profile picker searches local profile names, shows a useful no-match
+  state, and reloads buckets only when a different profile is committed.
+- The bucket list uses retained virtualized list state and local trimmed,
+  case-insensitive search. Arrow keys move its highlight; click or Enter
+  confirms a bucket. Filtering makes no AWS requests, and confirming the active
+  bucket does not repeat its recent-object scan.
+- Bucket rows have stable profile/bucket identities, folder icons, accessible
+  names, and tooltips for truncated names. Current selection survives filtering
+  and valid bucket refreshes. Existing loading, empty, failure, hidden-selection,
+  and manual-entry states remain usable; confirmation is blocked during bucket
+  loading or a download.
+- The list owns bucket scrolling while sidebar header and footer remain fixed.
+- A retained horizontal resizable layout has a preferred 22rem sidebar, an
+  18–28rem sidebar range, and at least 30rem for the workspace. View-menu
+  commands narrow/widen by 1rem or reset to 22rem, with `⌘⌥←`, `⌘⌥→`, and
+  `⌘⌥0`; width is retained for the current window session only.
+- Add test-support on the same GPUI Kit version and a private test constructor
+  so production `MainWindow` can be exercised without AWS config or requests.
+  Cover profile search/commit/dismissal/focus, bucket navigation/confirmation/
+  filtering/refresh/disabled states/scan counts, recent-result and version state,
+  splitter commands/limits/dragging, independent scrolling, long names, and
+  900×600 and 960×640 layouts in light and dark themes.
+- Update README framework references and document the new profile, bucket-list,
+  keyboard, and sidebar-resize interactions.
+- Run formatting, all tests, Cargo check, Clippy, the Apple Silicon release
+  build, dependency-tree inspection for old GPUI crates, and a native-window
+  smoke test where the local macOS toolchain permits.
+
+Do not add persistent settings, change window defaults or download workflow,
+introduce AWS permissions, implement an object browser, or implement future
+tasks.

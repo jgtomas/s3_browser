@@ -5,7 +5,7 @@
   <p>Use the AWS CLI profiles and roles you already trust. Find a bucket, discover recent objects, choose a version, and save the file locally.</p>
   <p>
     <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-111820?style=flat-square&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
-    <img src="https://img.shields.io/badge/Rust-GPUI-f28c28?style=flat-square&logo=rust&logoColor=white" alt="Built with Rust and GPUI" />
+    <img src="https://img.shields.io/badge/Rust-GPUI%20Kit-f28c28?style=flat-square&logo=rust&logoColor=white" alt="Built with Rust and GPUI Kit" />
     <img src="https://img.shields.io/badge/AWS-CLI%20profiles-243447?style=flat-square&logo=amazonaws&logoColor=white" alt="AWS CLI profiles" />
   </p>
 </div>
@@ -49,9 +49,14 @@ README useful until a final product screenshot is available.
 ## The workflow
 
 1. **Choose an AWS profile.** Profiles are read from `~/.aws/config` and shown
-   at the top of the Sidebar.
-2. **Choose a bucket.** Filter the loaded bucket list locally, refresh it when
-   needed, or enter a bucket name manually when the profile cannot list buckets.
+   in a searchable picker in the Sidebar. Typing filters locally; choosing the
+   already-active profile does not reload buckets.
+2. **Choose a bucket.** Use the virtualized bucket list: arrow keys move its
+   highlight, while Enter or a click confirms the bucket. Filter loaded buckets
+   locally, refresh when needed, or enter a bucket name manually when the
+   profile cannot list buckets. Resize the Sidebar by dragging its divider, or
+   use **View → Narrow Sidebar**, **Widen Sidebar**, or **Reset Sidebar Width**
+   (`⌘⌥←`, `⌘⌥→`, and `⌘⌥0`).
 3. **Identify the object.** After a bucket is selected, the app scans its
    current objects and shows up to five with the newest modification times.
    Choose a result to fill the key, or enter the full S3 key manually. Press
@@ -91,6 +96,8 @@ aws sso login --profile staging
 
 - Reads AWS profile names from `~/.aws/config`.
 - Lists and locally filters buckets for the selected profile.
+- Searches AWS profiles locally, navigates buckets by keyboard, and lets you
+  resize the Sidebar for your workspace.
 - Refreshes buckets without losing a still-valid selection.
 - Preserves the manual bucket-entry fallback when listing is denied.
 - Scans the selected bucket for up to five current objects with the newest
@@ -256,7 +263,7 @@ the application from a shell with the correct `PATH`.
 
 ```text
 src/
-├── main.rs                  # GPUI bootstrap and native application menu
+├── main.rs                  # GPUI Kit bootstrap and native application menu
 ├── app.rs                   # Application-level state transitions
 ├── aws/
 │   ├── cli.rs               # AWS CLI command execution and parsing
@@ -264,7 +271,7 @@ src/
 ├── models/
 │   └── app_state.rs         # Form state and download validation
 └── ui/
-    └── main_window.rs       # GPUI form and user interactions
+    └── main_window.rs       # GPUI Kit form and user interactions
 
 docs/images/                 # README feature icons and screenshot slot
 Packager.toml                # macOS app and DMG configuration
