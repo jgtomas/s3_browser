@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppStatus {
     Info(String),
@@ -25,6 +27,72 @@ pub struct ObjectVersion {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentObject {
+    pub key: String,
+    pub last_modified: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RecentObjectsState {
+    #[default]
+    Idle,
+    Loading {
+        profile: String,
+        bucket: String,
+        request_id: u64,
+    },
+    Loaded {
+        profile: String,
+        bucket: String,
+        request_id: u64,
+        objects: Vec<RecentObject>,
+    },
+    Failed {
+        profile: String,
+        bucket: String,
+        request_id: u64,
+        error: String,
+    },
+    Cancelled {
+        profile: String,
+        bucket: String,
+        request_id: u64,
+    },
+}
+
+impl RecentObjectsState {
+    pub fn matches(&self, profile: &str, bucket: &str) -> bool {
+        match self {
+            Self::Loading {
+                profile: current_profile,
+                bucket: current_bucket,
+                ..
+            }
+            | Self::Loaded {
+                profile: current_profile,
+                bucket: current_bucket,
+                ..
+            }
+            | Self::Failed {
+                profile: current_profile,
+                bucket: current_bucket,
+                ..
+            }
+            | Self::Cancelled {
+                profile: current_profile,
+                bucket: current_bucket,
+                ..
+            } => current_profile == profile && current_bucket == bucket,
+            Self::Idle => false,
+        }
+    }
+
+    pub fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading { .. })
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AppState {
     pub profiles: Vec<String>,
@@ -36,6 +104,7 @@ pub struct AppState {
     pub versions: Vec<ObjectVersion>,
     pub selected_version_id: Option<String>,
     pub destination: String,
+    pub recent_objects: RecentObjectsState,
     pub loading_buckets: bool,
     pub loading_versions: bool,
     pub downloading: bool,
@@ -101,7 +170,7 @@ impl AppState {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{AppState, AppStatus, ObjectVersion};
+    use super::{AppState, AppStatus, ObjectVersion, RecentObjectsState};
 
     #[test]
     fn default_state_is_empty_and_idle() {
@@ -114,6 +183,7 @@ mod tests {
         assert!(!state.manual_bucket_entry);
         assert!(state.versions.is_empty());
         assert!(state.selected_version_id.is_none());
+        assert_eq!(state.recent_objects, RecentObjectsState::Idle);
         assert!(!state.loading_buckets);
         assert!(!state.loading_versions);
         assert!(!state.downloading);

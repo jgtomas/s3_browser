@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString,
-    Styled, Subscription, Window, div, rems,
+    AnyElement, AppContext, Context, ElementId, Entity, IntoElement, ParentElement, Render,
+    SharedString, Styled, Subscription, Window, div, rems,
 };
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Sizable, StyledExt,
@@ -18,9 +18,9 @@ use gpui_component::{
 };
 
 use crate::{
-    app::{DownloaderApp, VersionLoadRequest},
+    app::{DownloaderApp, RecentObjectsLoadRequest, VersionLoadRequest},
     aws,
-    models::{AppState, AppStatus, DownloadRequest, ObjectVersion},
+    models::{AppState, AppStatus, DownloadRequest, ObjectVersion, RecentObjectsState},
 };
 
 const SIDEBAR_WIDTH_REMS: f32 = 22.0;
@@ -115,13 +115,17 @@ impl MainWindow {
             cx.subscribe_in(
                 &bucket_name_input,
                 window,
-                |this, input, event: &InputEvent, _, cx| {
-                    if matches!(event, InputEvent::Change) {
+                |this, input, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => {
                         let value = input.read(cx).value().to_string();
                         this.application.update(cx, |application, cx| {
                             application.set_manual_bucket(value, cx);
                         });
                     }
+                    InputEvent::PressEnter { secondary: false } => {
+                        this.start_recent_objects_load(false, window, cx);
+                    }
+                    _ => {}
                 },
             ),
             cx.subscribe_in(
@@ -201,6 +205,66 @@ impl MainWindow {
         };
 
         self.spawn_bucket_load(profile.clone(), profile, window, cx);
+    }
+
+    fn start_recent_objects_load(
+        &mut self,
+        force: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(request) = self.application.update(cx, |application, cx| {
+            application.begin_recent_objects_load(force, cx)
+        }) else {
+            return;
+        };
+
+        let application = self.application.clone();
+        let request_for_cli = request.clone();
+        window
+            .spawn(cx, async move |cx| {
+                let RecentObjectsLoadRequest {
+                    profile,
+                    bucket,
+                    cancelled,
+                    ..
+                } = request_for_cli;
+                let result = cx
+                    .background_executor()
+                    .spawn(
+                        async move { aws::cli::list_recent_objects(&profile, &bucket, &cancelled) },
+                    )
+                    .await;
+
+                let result = match result {
+                    Ok(Some(objects)) => Ok(objects),
+                    Ok(None) => return,
+                    Err(error) => Err(error),
+                };
+                let _ = cx.update(|_, cx| {
+                    application.update(cx, |application, cx| {
+                        application.finish_recent_objects_load(&request, result, cx);
+                    });
+                });
+            })
+            .detach();
+    }
+
+    fn cancel_recent_objects_load(&mut self, cx: &mut Context<Self>) {
+        self.application.update(cx, |application, cx| {
+            application.cancel_recent_objects_load(cx);
+        });
+    }
+
+    fn select_recent_object(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.application.update(cx, |application, cx| {
+            application.select_recent_object_key(key.clone(), cx);
+        });
+        self.object_key_input.update(cx, |input, cx| {
+            input.set_value(key, window, cx);
+            input.focus(window, cx);
+        });
+        self.clear_version_select(window, cx);
     }
 
     fn spawn_bucket_load(
@@ -490,6 +554,7 @@ impl MainWindow {
                 state,
                 &filtered_buckets,
                 &filter,
+                cx,
             )))
             .footer(
                 div()
@@ -500,12 +565,187 @@ impl MainWindow {
             )
     }
 
+    fn render_recent_objects(&self, state: &AppState, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected_identity = state
+            .selected_profile
+            .as_deref()
+            .zip(state.selected_bucket.as_deref());
+        let matches_selection = selected_identity
+            .is_some_and(|(profile, bucket)| state.recent_objects.matches(profile, bucket));
+
+        let action = if matches_selection {
+            match &state.recent_objects {
+                RecentObjectsState::Loading { .. } => Button::new("cancel-recent-objects")
+                    .ghost()
+                    .small()
+                    .label("Cancel")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.cancel_recent_objects_load(cx);
+                    }))
+                    .into_any_element(),
+                RecentObjectsState::Loaded { .. } => Button::new("refresh-recent-objects")
+                    .ghost()
+                    .small()
+                    .label("Refresh")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.start_recent_objects_load(true, window, cx);
+                    }))
+                    .into_any_element(),
+                RecentObjectsState::Failed { .. } | RecentObjectsState::Cancelled { .. } => {
+                    Button::new("retry-recent-objects")
+                        .ghost()
+                        .small()
+                        .label("Retry")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.start_recent_objects_load(true, window, cx);
+                        }))
+                        .into_any_element()
+                }
+                RecentObjectsState::Idle => div().into_any_element(),
+            }
+        } else {
+            div().into_any_element()
+        };
+
+        let content = if !matches_selection {
+            let message = match (
+                state.selected_profile.is_some(),
+                state.selected_bucket.is_some(),
+                state.manual_bucket_entry,
+            ) {
+                (false, _, _) => "Select an AWS profile to see recent objects.",
+                (_, false, true) => "Enter a bucket name and press Enter to scan it.",
+                (_, true, true) => "Press Enter in the bucket name field to scan this bucket.",
+                (_, false, false) => "Select a bucket to see recent objects.",
+                (_, true, false) => "Recent objects will appear here.",
+            };
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(message)
+                .into_any_element()
+        } else {
+            match &state.recent_objects {
+                RecentObjectsState::Idle => div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Recent objects will appear here.")
+                    .into_any_element(),
+                RecentObjectsState::Loading { .. } => h_flex()
+                    .gap_2()
+                    .items_center()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(Spinner::new().xsmall())
+                    .child("Scanning bucket for recent objects…")
+                    .into_any_element(),
+                RecentObjectsState::Loaded { objects, .. } if objects.is_empty() => div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No objects found")
+                    .into_any_element(),
+                RecentObjectsState::Loaded { objects, .. } => v_flex()
+                    .gap_1()
+                    .children(objects.iter().map(|object| {
+                        let profile = state.selected_profile.as_deref().unwrap_or_default();
+                        let bucket = state.selected_bucket.as_deref().unwrap_or_default();
+                        let timestamp = object.last_modified.format("%Y-%m-%d %H:%M:%S UTC");
+                        let key = object.key.clone();
+                        let identity = format!(
+                            "recent-object:{}:{}:{}:{}:{}",
+                            profile.len(),
+                            profile,
+                            bucket.len(),
+                            bucket,
+                            key
+                        );
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .w_full()
+                            .child(
+                                Button::new(ElementId::Name(identity.into()))
+                                    .ghost()
+                                    .small()
+                                    .flex_1()
+                                    .disabled(state.downloading || state.loading_versions)
+                                    .tooltip(key.clone())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.select_recent_object(key.clone(), window, cx);
+                                    }))
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .w_full()
+                                            .min_w_0()
+                                            .child(Icon::new(IconName::File).size_4())
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .overflow_x_hidden()
+                                                    .text_ellipsis()
+                                                    .child(object.key.clone()),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(timestamp.to_string()),
+                            )
+                    }))
+                    .into_any_element(),
+                RecentObjectsState::Failed { error, .. } => {
+                    let message = if aws::cli::is_access_denied_error(error) {
+                        format!(
+                            "Could not list recent objects: {error}. Confirm this profile has s3:ListBucket permission."
+                        )
+                    } else {
+                        format!("Could not list recent objects: {error}")
+                    };
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(message)
+                        .into_any_element()
+                }
+                RecentObjectsState::Cancelled { .. } => div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Recent object scan cancelled.")
+                    .into_any_element(),
+            }
+        };
+
+        v_flex()
+            .gap_2()
+            .w_full()
+            .child(
+                h_flex()
+                    .items_center()
+                    .justify_between()
+                    .child(div().text_sm().font_medium().child("Recent objects"))
+                    .child(action),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Newest by modification time · UTC"),
+            )
+            .child(content)
+    }
+
     fn render_bucket_menu(
         &self,
         state: &AppState,
         filtered_buckets: &[String],
         filter: &str,
+        cx: &mut Context<Self>,
     ) -> SidebarMenu {
+        let main_window = cx.entity();
         let items = if state.loading_buckets && state.buckets.is_empty() {
             vec![
                 SidebarMenuItem::new("Loading buckets…")
@@ -532,14 +772,23 @@ impl MainWindow {
                 .cloned()
                 .map(|bucket| {
                     let active = state.selected_bucket.as_deref() == Some(bucket.as_str());
-                    let application = self.application.clone();
                     let requested_bucket = bucket.clone();
+                    let main_window = main_window.clone();
                     SidebarMenuItem::new(bucket)
                         .icon(IconName::Folder)
                         .active(active)
-                        .on_click(move |_, _, cx| {
-                            application.update(cx, |application, cx| {
-                                application.select_bucket(requested_bucket.clone(), cx);
+                        .on_click(move |_, window, app| {
+                            main_window.update(app, |this, cx| {
+                                let changed =
+                                    this.application.read(cx).state.selected_bucket.as_deref()
+                                        != Some(requested_bucket.as_str());
+                                let selected = this.application.update(cx, |application, cx| {
+                                    application.select_bucket(requested_bucket.clone(), cx)
+                                });
+                                if selected && changed {
+                                    this.clear_version_select(window, cx);
+                                    this.start_recent_objects_load(false, window, cx);
+                                }
                             });
                         })
                 })
@@ -680,6 +929,13 @@ impl Render for MainWindow {
                             false,
                             cx.theme().muted_foreground,
                         ))
+                        .child(
+                            h_flex()
+                                .gap_4()
+                                .w_full()
+                                .child(div().w_24().flex_shrink_0())
+                                .child(self.render_recent_objects(&state, cx)),
+                        )
                         .child(field_row(
                             "Version",
                             version_control,

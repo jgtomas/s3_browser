@@ -5,6 +5,7 @@ edition = "2024"
 description = "A small macOS desktop app for downloading S3 objects with the AWS CLI."
 
 [dependencies]
+chrono = "0.4"
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 gpui-component = "0.5.1"
 gpui-component-assets = "0.5.1"

@@ -798,3 +798,41 @@ Acceptance criteria:
   window resizing, and the manual-bucket fallback remain usable;
 - the implementation follows the scope, tests, and verification gates in
   `UI_REDESIGN_PLAN.md`.
+
+# Task 17 — Five most recent S3 object keys
+
+When a bucket is selected, automatically list up to five current object keys,
+ordered by `LastModified` newest first. Use the existing AWS CLI integration,
+scan every `list-objects-v2` page in the background, and retain only the five
+best candidates plus the current page. Results show the exact key and UTC
+modification time. Selecting a result fills the object-key field; version
+lookup and download remain explicit actions.
+
+Use a request identity containing the profile, bucket, and monotonically
+increasing request ID. Cancel superseded scans, stop requesting later pages
+after cancellation, and reject stale results. Manual bucket entry starts a scan
+on Enter. Permission or listing errors remain recoverable and leave key entry
+available.
+
+Do not automatically load object versions, download anything, or add object
+browser navigation or a persistent cache. “Recent” refers to current objects'
+modification times; include all listed keys, including zero-byte objects.
+
+Acceptance criteria:
+
+- changed bucket selection starts one background scan; selecting the same
+  bucket again does not start a duplicate scan;
+- complete scans return up to five objects in descending modification-time
+  order, with key-ascending timestamp ties and exact key preservation;
+- pagination, malformed responses, missing or repeated continuation tokens,
+  empty buckets, and cancellation are handled without publishing partial or
+  stale results;
+- profile changes and bucket changes clear old results and cancel in-flight
+  work; a scan completion never overwrites a key typed by the user;
+- the recent-objects region shows loading/cancel, empty, error/retry, cancelled,
+  loaded/refresh states and provides keyboard-accessible selectable results;
+- selecting a result fills and focuses Object key, invalidates its version
+  selection, and does not trigger version lookup or download;
+- `README.md` explains the automatic full listing, AWS CLI permission, and
+  associated time and LIST-request costs;
+- format, relevant tests, `cargo check`, and Clippy pass.

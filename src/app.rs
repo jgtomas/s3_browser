@@ -1,7 +1,14 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use gpui::Context;
 
 use crate::aws;
-use crate::models::{AppState, AppStatus, DownloadRequest, ObjectVersion};
+use crate::models::{
+    AppState, AppStatus, DownloadRequest, ObjectVersion, RecentObject, RecentObjectsState,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionLoadRequest {
@@ -9,6 +16,63 @@ pub struct VersionLoadRequest {
     pub bucket: String,
     pub key: String,
     pub request_id: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RecentObjectsLoadRequest {
+    pub profile: String,
+    pub bucket: String,
+    pub request_id: u64,
+    pub cancelled: Arc<AtomicBool>,
+}
+
+fn should_start_recent_load(
+    state: &RecentObjectsState,
+    profile: &str,
+    bucket: &str,
+    force: bool,
+) -> bool {
+    !state.is_loading() && (force || !state.matches(profile, bucket))
+}
+
+fn recent_request_is_current(
+    state: &RecentObjectsState,
+    request: &RecentObjectsLoadRequest,
+) -> bool {
+    matches!(
+        state,
+        RecentObjectsState::Loading {
+            profile,
+            bucket,
+            request_id,
+        } if profile == &request.profile && bucket == &request.bucket && *request_id == request.request_id
+    )
+}
+
+fn apply_recent_objects_result(
+    state: &mut AppState,
+    request: &RecentObjectsLoadRequest,
+    result: Result<Vec<RecentObject>, String>,
+) -> bool {
+    if !recent_request_is_current(&state.recent_objects, request) {
+        return false;
+    }
+
+    state.recent_objects = match result {
+        Ok(objects) => RecentObjectsState::Loaded {
+            profile: request.profile.clone(),
+            bucket: request.bucket.clone(),
+            request_id: request.request_id,
+            objects,
+        },
+        Err(error) => RecentObjectsState::Failed {
+            profile: request.profile.clone(),
+            bucket: request.bucket.clone(),
+            request_id: request.request_id,
+            error,
+        },
+    };
+    true
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -40,6 +104,8 @@ fn reconcile_bucket_list(
 pub struct DownloaderApp {
     pub state: AppState,
     next_version_request_id: u64,
+    next_recent_objects_request_id: u64,
+    recent_objects_cancellation: Option<Arc<AtomicBool>>,
     bucket_refresh_in_progress: bool,
 }
 
@@ -53,6 +119,8 @@ impl DownloaderApp {
                 ..Default::default()
             },
             next_version_request_id: 0,
+            next_recent_objects_request_id: 0,
+            recent_objects_cancellation: None,
             bucket_refresh_in_progress: false,
         }
     }
@@ -101,6 +169,7 @@ impl DownloaderApp {
             return false;
         }
 
+        self.clear_recent_objects();
         self.state.selected_profile = Some(profile);
         self.bucket_refresh_in_progress = false;
         self.state.buckets.clear();
@@ -165,6 +234,7 @@ impl DownloaderApp {
                     if reconciliation.selected_bucket_removed {
                         self.state.object_key.clear();
                         self.invalidate_version_state();
+                        self.clear_recent_objects();
                     }
                     self.state.manual_bucket_entry = false;
                 } else {
@@ -210,6 +280,7 @@ impl DownloaderApp {
         }
 
         if self.state.selected_bucket.as_deref() != Some(bucket.as_str()) {
+            self.clear_recent_objects();
             self.state.selected_bucket = Some(bucket);
             self.invalidate_version_state();
             self.state.status = Some(AppStatus::Info(
@@ -225,9 +296,82 @@ impl DownloaderApp {
             return;
         }
 
-        self.state.selected_bucket = (!value.trim().is_empty()).then(|| value.trim().to_string());
+        let bucket = (!value.trim().is_empty()).then(|| value.trim().to_string());
+        if self.state.selected_bucket == bucket {
+            return;
+        }
+
+        self.clear_recent_objects();
+        self.state.selected_bucket = bucket;
         self.invalidate_version_state();
         cx.notify();
+    }
+
+    pub fn begin_recent_objects_load(
+        &mut self,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<RecentObjectsLoadRequest> {
+        let profile = self.state.selected_profile.clone()?;
+        let bucket = self.state.selected_bucket.clone()?;
+        if !should_start_recent_load(&self.state.recent_objects, &profile, &bucket, force) {
+            return None;
+        }
+
+        self.cancel_recent_objects_request();
+        self.next_recent_objects_request_id = self.next_recent_objects_request_id.saturating_add(1);
+        let request_id = self.next_recent_objects_request_id;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.state.recent_objects = RecentObjectsState::Loading {
+            profile: profile.clone(),
+            bucket: bucket.clone(),
+            request_id,
+        };
+        self.recent_objects_cancellation = Some(cancelled.clone());
+        cx.notify();
+        Some(RecentObjectsLoadRequest {
+            profile,
+            bucket,
+            request_id,
+            cancelled,
+        })
+    }
+
+    pub fn finish_recent_objects_load(
+        &mut self,
+        request: &RecentObjectsLoadRequest,
+        result: Result<Vec<RecentObject>, String>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !apply_recent_objects_result(&mut self.state, request, result) {
+            return false;
+        }
+
+        self.recent_objects_cancellation = None;
+        cx.notify();
+        true
+    }
+
+    pub fn cancel_recent_objects_load(&mut self, cx: &mut Context<Self>) -> bool {
+        let RecentObjectsState::Loading {
+            profile,
+            bucket,
+            request_id,
+        } = &self.state.recent_objects
+        else {
+            return false;
+        };
+        let cancelled_state = RecentObjectsState::Cancelled {
+            profile: profile.clone(),
+            bucket: bucket.clone(),
+            request_id: *request_id,
+        };
+        if let Some(cancelled) = self.recent_objects_cancellation.take() {
+            cancelled.store(true, Ordering::Release);
+        }
+        self.state.recent_objects = cancelled_state;
+        cx.notify();
+        true
     }
 
     pub fn set_object_key(&mut self, value: String, cx: &mut Context<Self>) {
@@ -235,6 +379,11 @@ impl DownloaderApp {
             self.state.object_key = value;
             self.invalidate_version_state();
         }
+        cx.notify();
+    }
+
+    pub fn select_recent_object_key(&mut self, key: String, cx: &mut Context<Self>) {
+        self.apply_recent_object_key(key);
         cx.notify();
     }
 
@@ -421,6 +570,22 @@ impl DownloaderApp {
         self.state.selected_version_id = None;
         self.state.loading_versions = false;
     }
+
+    fn apply_recent_object_key(&mut self, key: String) {
+        self.state.object_key = key;
+        self.invalidate_version_state();
+    }
+
+    fn cancel_recent_objects_request(&mut self) {
+        if let Some(cancelled) = self.recent_objects_cancellation.take() {
+            cancelled.store(true, Ordering::Release);
+        }
+    }
+
+    fn clear_recent_objects(&mut self) {
+        self.cancel_recent_objects_request();
+        self.state.recent_objects = RecentObjectsState::Idle;
+    }
 }
 
 impl Default for DownloaderApp {
@@ -431,7 +596,14 @@ impl Default for DownloaderApp {
 
 #[cfg(test)]
 mod tests {
-    use super::reconcile_bucket_list;
+    use std::sync::{Arc, atomic::AtomicBool};
+
+    use crate::models::RecentObjectsState;
+
+    use super::{
+        DownloaderApp, RecentObjectsLoadRequest, apply_recent_objects_result,
+        recent_request_is_current, reconcile_bucket_list, should_start_recent_load,
+    };
 
     #[test]
     fn reconciliation_sorts_deduplicates_and_retains_available_selection() {
@@ -453,5 +625,123 @@ mod tests {
         assert_eq!(reconciliation.buckets, vec!["alpha"]);
         assert_eq!(reconciliation.selected_bucket, None);
         assert!(reconciliation.selected_bucket_removed);
+    }
+
+    #[test]
+    fn recent_load_start_suppresses_duplicates_and_requires_force_to_refresh() {
+        let loaded = RecentObjectsState::Loaded {
+            profile: "default".to_string(),
+            bucket: "bucket-a".to_string(),
+            request_id: 1,
+            objects: Vec::new(),
+        };
+
+        assert!(!should_start_recent_load(
+            &loaded, "default", "bucket-a", false
+        ));
+        assert!(should_start_recent_load(
+            &loaded, "default", "bucket-a", true
+        ));
+        assert!(should_start_recent_load(
+            &loaded, "default", "bucket-b", false
+        ));
+        assert!(!should_start_recent_load(
+            &RecentObjectsState::Loading {
+                profile: "default".to_string(),
+                bucket: "bucket-a".to_string(),
+                request_id: 2,
+            },
+            "default",
+            "bucket-a",
+            true,
+        ));
+    }
+
+    #[test]
+    fn recent_load_completion_rejects_stale_and_reselected_bucket_requests() {
+        let state = RecentObjectsState::Loading {
+            profile: "default".to_string(),
+            bucket: "bucket-a".to_string(),
+            request_id: 3,
+        };
+        let request = RecentObjectsLoadRequest {
+            profile: "default".to_string(),
+            bucket: "bucket-a".to_string(),
+            request_id: 1,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(!recent_request_is_current(&state, &request));
+    }
+
+    #[test]
+    fn recent_load_completion_preserves_a_key_typed_while_scanning() {
+        let mut state = crate::models::AppState {
+            object_key: "typed/during-scan.txt".to_string(),
+            recent_objects: RecentObjectsState::Loading {
+                profile: "default".to_string(),
+                bucket: "bucket-a".to_string(),
+                request_id: 3,
+            },
+            ..Default::default()
+        };
+        let request = RecentObjectsLoadRequest {
+            profile: "default".to_string(),
+            bucket: "bucket-a".to_string(),
+            request_id: 3,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(apply_recent_objects_result(
+            &mut state,
+            &request,
+            Ok(Vec::new())
+        ));
+        assert_eq!(state.object_key, "typed/during-scan.txt");
+        assert!(matches!(
+            state.recent_objects,
+            RecentObjectsState::Loaded { .. }
+        ));
+    }
+
+    #[test]
+    fn clearing_recent_objects_cancels_a_running_scan() {
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let mut application = DownloaderApp::new();
+        application.recent_objects_cancellation = Some(cancellation.clone());
+        application.state.recent_objects = RecentObjectsState::Loading {
+            profile: "default".to_string(),
+            bucket: "bucket-a".to_string(),
+            request_id: 1,
+        };
+
+        application.clear_recent_objects();
+
+        assert!(cancellation.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(application.state.recent_objects, RecentObjectsState::Idle);
+    }
+
+    #[test]
+    fn selecting_a_recent_key_clears_even_the_same_keys_version_selection() {
+        let mut application = DownloaderApp::new();
+        application.state.object_key = "reports/latest.csv".to_string();
+        application.state.versions = vec![crate::models::ObjectVersion {
+            key: "reports/latest.csv".to_string(),
+            version_id: "historic-version".to_string(),
+            is_latest: false,
+            last_modified: "2026-10-12T00:00:00Z".to_string(),
+            size: 42,
+        }];
+        application.state.selected_version_id = Some("historic-version".to_string());
+        application.state.loading_versions = true;
+        let old_request_id = application.next_version_request_id;
+
+        application.apply_recent_object_key("reports/latest.csv".to_string());
+
+        assert_eq!(application.state.object_key, "reports/latest.csv");
+        assert!(application.state.versions.is_empty());
+        assert!(application.state.selected_version_id.is_none());
+        assert!(!application.state.loading_versions);
+        assert!(application.next_version_request_id > old_request_id);
     }
 }

@@ -2,7 +2,7 @@
   <img src="icon_s3_browser_512.png" alt="S3 Downloader icon" width="128" />
   <h1>S3 Downloader</h1>
   <p><strong>A focused macOS workspace for downloading one object from a client S3 bucket.</strong></p>
-  <p>Use the AWS CLI profiles and roles you already trust. Find the bucket, choose the object version, and save the file locally.</p>
+  <p>Use the AWS CLI profiles and roles you already trust. Find a bucket, discover recent objects, choose a version, and save the file locally.</p>
   <p>
     <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-111820?style=flat-square&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
     <img src="https://img.shields.io/badge/Rust-GPUI-f28c28?style=flat-square&logo=rust&logoColor=white" alt="Built with Rust and GPUI" />
@@ -52,14 +52,20 @@ README useful until a final product screenshot is available.
    at the top of the Sidebar.
 2. **Choose a bucket.** Filter the loaded bucket list locally, refresh it when
    needed, or enter a bucket name manually when the profile cannot list buckets.
-3. **Identify the object.** Enter the full S3 key, including folders. Press
+3. **Identify the object.** After a bucket is selected, the app scans its
+   current objects and shows up to five with the newest modification times.
+   Choose a result to fill the key, or enter the full S3 key manually. Press
    Enter or choose **Load versions** to inspect available versions.
 4. **Choose what to download.** Leave the version selector on **Current version**
    for the latest object, or select a specific version ID for a historical copy.
 5. **Save the file.** Choose a local destination and press **Download**.
 
 The selected profile and bucket stay visible as quiet context while you work,
-and the app reports loading, success, and AWS errors in the workspace.
+and the app reports scanning, download progress, success, and AWS errors in the
+workspace. Recent-object discovery scans every page in the selected bucket;
+large buckets can take time and require one or more S3 LIST requests per page.
+You can cancel the scan, and manual key entry, version lookup, and downloading
+remain available while it runs.
 
 ## Role-based access, without another credential store
 
@@ -87,6 +93,8 @@ aws sso login --profile staging
 - Lists and locally filters buckets for the selected profile.
 - Refreshes buckets without losing a still-valid selection.
 - Preserves the manual bucket-entry fallback when listing is denied.
+- Scans the selected bucket for up to five current objects with the newest
+  `LastModified` timestamps; selecting a result fills the object key.
 - Loads object versions for an exact key with Enter or **Load versions**.
 - Downloads the current/latest object when no version is selected.
 - Downloads a specific object version when one is selected.
@@ -208,6 +216,11 @@ Then run `./scripts/build-macos.sh` again.
 The selected AWS identity generally needs:
 
 - `s3:ListAllMyBuckets` to load the bucket list.
+- `s3:ListBucket` on each bucket to scan all current object keys and identify
+  the five most recently modified objects. This is a full paginated listing,
+  not a server-side “newest five” query, so large buckets may take longer and
+  incur multiple LIST requests. Manual object-key entry does not need this
+  permission, but automatic recent-object discovery will fail without it.
 - `s3:ListBucketVersions` to load versions for an object key.
 - `s3:GetObject` to download the current object.
 - `s3:GetObjectVersion` when downloading a specific version.

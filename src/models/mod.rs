@@ -1,3 +1,5 @@
 pub mod app_state;
 
-pub use app_state::{AppState, AppStatus, DownloadRequest, ObjectVersion};
+pub use app_state::{
+    AppState, AppStatus, DownloadRequest, ObjectVersion, RecentObject, RecentObjectsState,
+};
