@@ -172,6 +172,23 @@ impl ListDelegate for BucketListDelegate {
         let profile = self.profile.as_deref().unwrap_or("unselected");
         let row_id: ElementId = format!("bucket-row:{profile}:{bucket}").into();
         let button_id: ElementId = format!("bucket-label:{profile}:{bucket}").into();
+        let icon_id: ElementId = format!("bucket-icon:{profile}:{bucket}").into();
+        let label_id: ElementId = format!("bucket-name:{profile}:{bucket}").into();
+        let icon = div()
+            .id(icon_id)
+            .child(Icon::new(IconName::Folder).size_4());
+        #[cfg(test)]
+        let icon = icon.test_support();
+        let label = div()
+            .id(label_id)
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(bucket.clone());
+        #[cfg(test)]
+        let label = label.test_support();
         Some(
             ListItem::new(row_id)
                 .confirmed(self.confirmed_bucket.as_deref() == Some(bucket.as_str()))
@@ -180,10 +197,18 @@ impl ListDelegate for BucketListDelegate {
                     Button::new(button_id)
                         .ghost()
                         .small()
-                        .icon(Icon::new(IconName::Folder).size_4())
-                        .label(bucket.clone())
-                        .tooltip(bucket)
-                        .w_full(),
+                        .accessibility_label(bucket.clone())
+                        .tooltip(bucket.clone())
+                        .w_full()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .justify_start()
+                                .gap_2()
+                                .child(icon)
+                                .child(label),
+                        ),
                 ),
         )
     }
@@ -1862,6 +1887,20 @@ mod tests {
                     .find(format!("bucket-row:default:{long_bucket}"))
                     .label(),
                 Some(long_bucket)
+            );
+            let button = window
+                .find(format!("bucket-label:default:{long_bucket}"))
+                .bounds();
+            let icon = window
+                .find(format!("bucket-icon:default:{long_bucket}"))
+                .bounds();
+            let label = window
+                .find(format!("bucket-name:default:{long_bucket}"))
+                .bounds();
+            assert!(label.left() >= icon.right());
+            assert!(
+                label.left() - button.left() < super::rems(4.0).to_pixels(window.rem_size()),
+                "bucket text should begin near the leading edge, not at the row center"
             );
 
             main_window.update(cx, |this, cx| {
